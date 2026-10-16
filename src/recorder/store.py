@@ -58,10 +58,13 @@ MIGRATIONS = [
     ALTER TABLE segments ADD COLUMN speaker_match TEXT;
     UPDATE segments SET speaker_match = 'me' WHERE speaker_score IS NOT NULL;
     """,
+    """
+    ALTER TABLE recordings ADD COLUMN title TEXT;
+    """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
-_REC_COLS = "r.id, r.path, r.sha256, r.started_at, r.duration, r.language, r.params"
+_REC_COLS = "r.id, r.path, r.sha256, r.started_at, r.duration, r.language, r.params, r.title"
 _SEG_COLS = (
     "s.start, s.end, s.text, s.speaker, s.avg_logprob, s.no_speech_prob, "
     "s.speaker_score, s.speaker_match"
@@ -69,17 +72,46 @@ _SEG_COLS = (
 
 
 def _rec(row) -> Recording:
-    return Recording(*row[:6], params=json.loads(row[6]))
+    return Recording(*row[:6], params=json.loads(row[6]), title=row[7])
+
+
+def _statements(script: str) -> list[str]:
+    stmts, buf = [], ""
+    for line in script.splitlines(keepends=True):
+        buf += line
+        if sqlite3.complete_statement(buf):
+            stmts.append(buf.strip())
+            buf = ""
+    return stmts
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if version > SCHEMA_VERSION:
-        raise RuntimeError(f"database schema v{version} is newer than this SDK (v{SCHEMA_VERSION})")
-    for i in range(version, SCHEMA_VERSION):
-        # executescript commits on its own, so each migration and its version
-        # bump run as one script inside an explicit transaction
-        conn.executescript(f"BEGIN; {MIGRATIONS[i]} PRAGMA user_version = {i + 1}; COMMIT;")
+    """Bring the schema up to date. Safe when several connections open the
+    same database at once (e.g. the web UI's request threads): each step takes
+    the write lock, re-reads the version, and runs only if still needed.
+    """
+    saved, conn.isolation_level = conn.isolation_level, None  # manage transactions here
+    try:
+        while True:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+                if version > SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"database schema v{version} is newer than this SDK (v{SCHEMA_VERSION})"
+                    )
+                if version == SCHEMA_VERSION:
+                    conn.execute("COMMIT")
+                    return
+                for stmt in _statements(MIGRATIONS[version]):
+                    conn.execute(stmt)
+                conn.execute(f"PRAGMA user_version = {version + 1}")
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+    finally:
+        conn.isolation_level = saved
 
 
 class Store:
@@ -166,6 +198,15 @@ class Store:
         ).fetchone()
         return _rec(row) if row else None
 
+    def rename(self, recording_id: int, title: str | None) -> bool:
+        """Set a recording's display name; empty or None goes back to the file name."""
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE recordings SET title = ? WHERE id = ?",
+                ((title or "").strip() or None, recording_id),
+            )
+        return cur.rowcount > 0
+
     def recordings(self) -> list[Recording]:
         rows = self.conn.execute(f"SELECT {_REC_COLS} FROM recordings r ORDER BY r.id").fetchall()
         return [_rec(r) for r in rows]
@@ -240,4 +281,4 @@ class Store:
             "WHERE s.text LIKE ? ORDER BY r.id, s.start LIMIT ?",
             (f"%{query}%", limit),
         ).fetchall()
-        return [(_rec(r[:7]), Segment(*r[7:])) for r in rows]
+        return [(_rec(r[:8]), Segment(*r[8:])) for r in rows]

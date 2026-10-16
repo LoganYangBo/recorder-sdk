@@ -114,3 +114,25 @@ def test_migrates_pre_versioning_database(tmp_path):
         assert store.segments(1, words=True)[0].text == "old"
     with Store(db):  # reopening is a no-op
         pass
+
+
+def test_concurrent_opens_migrate_once(tmp_path):
+    import threading
+
+    db = tmp_path / "race.db"
+    errors = []
+
+    def open_store():
+        try:
+            Store(db).close()
+        except Exception as e:  # pragma: no cover - the failure being tested for
+            errors.append(e)
+
+    threads = [threading.Thread(target=open_store) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    with Store(db) as store:
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION

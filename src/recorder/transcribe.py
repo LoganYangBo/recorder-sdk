@@ -4,9 +4,12 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from .models import Segment, Transcript, Word
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 def _add_nvidia_dll_dirs() -> None:
@@ -90,10 +93,12 @@ class WhisperTranscriber:
             )
         return self._model
 
-    def transcribe(self, path: str | Path) -> Transcript:
+    def transcribe(self, path: str | Path | np.ndarray) -> Transcript:
+        """Transcribe an audio file, or 16 kHz mono float32 samples."""
         model = self._load()
+        audio = path if hasattr(path, "dtype") else str(path)
         segments, info = model.transcribe(
-            str(path),
+            audio,
             language=self.language,
             vad_filter=self.vad_filter,
             beam_size=self.beam_size,

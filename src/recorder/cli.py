@@ -101,9 +101,23 @@ def cmd_transcribe(args) -> None:
 def cmd_ui(args) -> None:
     from .web import serve
 
+    whisper = {"model": args.model, "language": args.language, "hotwords": args.hotwords}
     serve(
-        args.db, host=args.host, port=args.port, device=args.device, open_browser=not args.no_open
+        args.db,
+        host=args.host,
+        port=args.port,
+        device=args.device,
+        open_browser=not args.no_open,
+        library=args.library,
+        whisper=whisper,
     )
+
+
+def cmd_rename(args) -> None:
+    with Store(args.db) as store:
+        if not store.rename(args.recording_id, args.title):
+            raise SystemExit(f"no recording {args.recording_id}")
+        print(f"recording {args.recording_id}: {store.recording(args.recording_id).name}")
 
 
 def cmd_show(args) -> None:
@@ -126,7 +140,8 @@ def cmd_list(args) -> None:
     with Store(args.db) as store:
         for r in store.recordings():
             model = r.params.get("model", "?")
-            print(f"{r.id:>4}  {_fmt(r.duration)}  {r.language}  {model:<10}  {r.path}")
+            name = f"{r.title}  ({r.path})" if r.title else r.path
+            print(f"{r.id:>4}  {_fmt(r.duration)}  {r.language}  {model:<10}  {name}")
 
 
 def cmd_search(args) -> None:
@@ -184,10 +199,21 @@ def main(argv: list[str] | None = None) -> None:
 
     sub.add_parser("list", help="list recordings").set_defaults(func=cmd_list)
 
+    rn = sub.add_parser("rename", help="set a recording's display name")
+    rn.add_argument("recording_id", type=int)
+    rn.add_argument("title", help='new name; "" goes back to the file name')
+    rn.set_defaults(func=cmd_rename)
+
     u = sub.add_parser("ui", help="open the web UI in your browser")
     u.add_argument("--port", type=int, default=8765)
     u.add_argument("--host", default="127.0.0.1", help="keep the default to stay local-only")
-    u.add_argument("--device", default="auto", help="speaker model: auto / cuda / cpu")
+    u.add_argument("--device", default="auto", help="auto / cuda / cpu")
+    u.add_argument("--model", default="large-v3", help="Whisper model for imports and live")
+    u.add_argument("--language", default=None, help="force language, e.g. en / zh")
+    u.add_argument("--hotwords", default=None, help='names/terms to favour, e.g. "Logan"')
+    u.add_argument(
+        "--library", default=None, help="where imports go (default: recordings/ by the db)"
+    )
     u.add_argument("--no-open", action="store_true", help="don't open a browser")
     u.set_defaults(func=cmd_ui)
 

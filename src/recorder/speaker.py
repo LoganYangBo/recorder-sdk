@@ -155,7 +155,10 @@ class VoiceprintLabeler:
         return audio[a:b]
 
     def label(self, path: str | Path, transcript: Transcript) -> Transcript:
-        audio = load_audio(path)
+        return self.label_audio(load_audio(path), transcript)
+
+    def label_audio(self, audio: np.ndarray, transcript: Transcript) -> Transcript:
+        """Like label(), for 16 kHz samples already in memory."""
         for s in transcript.segments:
             clip = self._clip(audio, s.start, s.end)
             if len(clip) < SAMPLE_RATE // 4:  # under 0.25 s: nothing to go on

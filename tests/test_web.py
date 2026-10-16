@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -28,6 +29,18 @@ class BandEmbedder:
         return np.array([spec[freqs < 500].sum(), spec[freqs >= 500].sum()], np.float32)
 
 
+class FakeTranscriber:
+    params = {"model": "fake"}
+
+    def transcribe(self, audio):
+        if hasattr(audio, "dtype"):  # live: one segment per 2 s
+            n = len(audio) // (2 * SR)
+            segs = [Segment(2.0 * k, 2.0 * k + 2, f"live {k}") for k in range(n)]
+            return Transcript("en", len(audio) / SR, segs)
+        segs = [Segment(0, 2, "imported a"), Segment(2, 4, "imported b"), Segment(4, 6, "c")]
+        return Transcript("en", 6, segs, params=self.params)
+
+
 @pytest.fixture
 def server(tmp_path, monkeypatch):
     audio_file = tmp_path / "talk.m4a"
@@ -50,7 +63,14 @@ def server(tmp_path, monkeypatch):
         )
         store.save(audio_file, "h", t)
         store.save_voiceprint("me", BandEmbedder.name, np.array([1, 0], np.float32).tobytes())
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(App(db, embedder=BandEmbedder())))
+    srv = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        make_handler(
+            App(
+                db, embedder=BandEmbedder(), transcriber=FakeTranscriber(), library=tmp_path / "lib"
+            )
+        ),
+    )
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{srv.server_address[1]}"
     srv.shutdown()
@@ -129,3 +149,81 @@ def test_errors_are_json(server):
         with pytest.raises(urllib.error.HTTPError) as e:
             call(server, path, method, body)
         assert e.value.code == status and "error" in json.loads(e.value.read())
+
+
+def test_rename(server):
+    assert (
+        jcall(server, "/api/recordings/1/rename", "POST", {"title": "Team sync"})["name"]
+        == "Team sync"
+    )
+    (rec,) = jcall(server, "/api/recordings")
+    assert (rec["name"], rec["file"], rec["title"]) == ("Team sync", "talk.m4a", "Team sync")
+    assert jcall(server, "/api/search?q=there")[0]["name"] == "Team sync"
+    jcall(server, "/api/recordings/1/rename", "POST", {"title": ""})
+    assert jcall(server, "/api/recordings")[0]["name"] == "talk.m4a"
+
+
+def wait_jobs(base):
+    for _ in range(100):
+        jobs = jcall(base, "/api/jobs")
+        if all(j["status"] not in ("queued", "running") for j in jobs):
+            return jobs
+        time.sleep(0.05)
+    raise AssertionError("jobs did not finish")
+
+
+def test_import_transcribes_in_background(server, tmp_path):
+    req = urllib.request.Request(
+        server + "/api/import?name=..%2F..%2Fnew%20talk.m4a&threshold=0.8",
+        data=b"new audio bytes",
+        method="POST",
+    )
+    with urllib.request.urlopen(req) as r:
+        job = json.loads(r.read())
+    assert job["name"] == "new talk.m4a"  # directory part dropped
+    (done,) = wait_jobs(server)
+    assert done["status"] == "done" and done["recording"] == 2
+    assert (tmp_path / "lib" / "new talk.m4a").read_bytes() == b"new audio bytes"
+    segs = jcall(server, "/api/recordings/2/segments")
+    assert [s["speaker"] for s in segs] == ["me", "other", "other"]  # labelled on import
+
+    # the same bytes again: stored once, the extra copy removed
+    with urllib.request.urlopen(
+        urllib.request.Request(
+            server + "/api/import?name=new%20talk.m4a", data=b"new audio bytes", method="POST"
+        )
+    ):
+        pass
+    dup = wait_jobs(server)[0]
+    assert dup["status"] == "duplicate" and dup["recording"] == 2
+    assert sorted(p.name for p in (tmp_path / "lib").iterdir()) == ["new talk.m4a"]
+
+
+def test_import_rejects_non_audio(server):
+    req = urllib.request.Request(server + "/api/import?name=notes.txt", data=b"x", method="POST")
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    assert e.value.code == 400
+
+
+def test_live_session_over_http(server, tmp_path):
+    sid = jcall(server, "/api/live/start", "POST", {"threshold": 0.3})["id"]
+    audio = np.concatenate([tone(200, 2), tone(200, 2), tone(800, 2)])
+    committed = []
+    for i in range(0, len(audio), SR):
+        req = urllib.request.Request(
+            f"{server}/api/live/{sid}/audio",
+            data=audio[i : i + SR].astype("<f4").tobytes(),
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as r:
+            committed += json.loads(r.read())["committed"]
+    # the fake numbers segments within the re-transcribed tail, so compare times
+    assert [(c["n"], c["start"]) for c in committed] == [(1, 0.0), (2, 2.0)]
+    stop = jcall(server, f"/api/live/{sid}/stop", "POST", {})
+    assert [(c["n"], c["start"]) for c in stop["committed"]] == [(3, 4.0)]
+    rec = [r for r in jcall(server, "/api/recordings") if r["id"] == stop["recording"]][0]
+    assert rec["file"].startswith("live-") and rec["duration"] == 6.0
+    segs = jcall(server, f"/api/recordings/{stop['recording']}/segments")
+    assert [s["start"] for s in segs] == [0.0, 2.0, 4.0]
+    assert all(s["speaker"] for s in segs)

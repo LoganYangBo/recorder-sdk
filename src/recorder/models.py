@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -45,3 +46,8 @@ class Recording:
     duration: float
     language: str
     params: dict = field(default_factory=dict)  # how it was transcribed (model, prompt, ...)
+    title: str | None = None  # display name set by the user; the file itself is not renamed
+
+    @property
+    def name(self) -> str:
+        return self.title or Path(self.path).name

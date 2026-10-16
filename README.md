@@ -54,12 +54,21 @@ opens a database; existing databases are upgraded in place.
 recorder ui                           # opens http://127.0.0.1:8765 in your browser
 ```
 
-Browse recordings, play audio from any segment or word (click the time or a word), switch
-between segments and merged speaker turns, see low-confidence words underlined, and search
-all transcripts. Under 说话人 you can list and delete voiceprints and tune the threshold;
-tick segments in a transcript and enter a name to enroll that person. Transcription still
-runs from the CLI. The server only listens on localhost and needs no extra packages
-(enrolling and re-scoring need the `[speaker]` extra).
+- Browse recordings, play audio from any segment or word (click the time or a word), switch
+  between segments and merged speaker turns, see low-confidence words underlined, search.
+- 导入 (or drag files onto the page): files are copied into the library folder
+  (`recordings/` next to the database, `--library` to change) and transcribed one by one in
+  the background, with speaker labels.
+- 改名: give a recording a display name (`recorder rename ID "name"` in the CLI). The file on
+  disk keeps its name.
+- 实时录音: record from the microphone; the page shows the transcript and speakers as you
+  talk, and saves a WAV in the library as a normal recording when you stop.
+- 说话人: list and delete voiceprints, tune the threshold; tick segments in a transcript and
+  enter a name to enroll that person.
+
+`recorder ui --model large-v3 --hotwords "Logan"` sets the Whisper options for imports and
+live recording. Whisper and the speaker model run one job at a time, so live transcription
+pauses while an import is being transcribed. The server only listens on localhost.
 
 ## Who is speaking
 

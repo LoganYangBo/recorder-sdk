@@ -120,6 +120,39 @@ mark { background: var(--play); color: inherit; padding: 0 1px; }
 .busy.show { display: flex; }
 .busy div { background: var(--panel); padding: 16px 22px; border-radius: 10px; }
 
+.jobs { padding: 0 14px 6px; }
+.job { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 3px 0; }
+.job .jn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job .st { color: var(--muted); white-space: nowrap; }
+.job .st.err { color: var(--danger); cursor: help; }
+.job .st.ok { color: var(--s1); }
+.spin { width: 10px; height: 10px; border: 2px solid var(--line); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.drop { position: fixed; inset: 0; background: rgba(47,111,219,.12); border: 3px dashed var(--accent);
+  display: none; align-items: center; justify-content: center; z-index: 40; font-size: 20px;
+  color: var(--accent); font-weight: 600; pointer-events: none; }
+.drop.show { display: flex; }
+.title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.title-row h2 { margin: 0; }
+.title-row .file { color: var(--muted); font-size: 12px; }
+.title-row input { font-size: 16px; font-weight: 600; flex: 1; max-width: 480px; }
+button.rec-btn { color: var(--danger); border-color: var(--danger); white-space: nowrap; }
+button.rec-btn::before { content: "●"; margin-right: 5px; }
+.live { padding: 20px; max-width: 900px; }
+.live-head { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
+.live-head .clock { font-size: 26px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.big { font-size: 15px; padding: 8px 18px; border-radius: 20px; }
+.big.start { background: var(--danger); border-color: var(--danger); color: #fff; }
+.big.stop { border-color: var(--danger); color: var(--danger); }
+.meter { width: 160px; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.meter div { height: 100%; width: 0; background: var(--s1); transition: width .1s; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .2; } }
+.live .partial { color: var(--muted); font-style: italic; padding: 6px 8px; }
+.live .line { grid-template-columns: 64px 110px 1fr; }
+.live .status { color: var(--muted); font-size: 13px; }
+
 @media (max-width: 760px) {
   .layout { grid-template-columns: 1fr; height: auto; }
   aside { max-height: 180px; border-right: none; border-bottom: 1px solid var(--line); }
@@ -139,11 +172,15 @@ mark { background: var(--play); color: inherit; padding: 0 1px; }
   <h1>Recorder</h1>
   <input type="search" id="q" placeholder="搜索全部转写…">
   <span class="spacer"></span>
+  <button id="importBtn">导入</button>
+  <input type="file" id="fileIn" accept="audio/*,.m4a,.mp3,.wav,.flac,.ogg,.opus,.aac" multiple hidden>
+  <button class="rec-btn" id="liveBtn">实时录音</button>
   <button id="openSpk">说话人</button>
 </header>
 
 <div class="layout">
   <aside>
+    <div id="jobsBox" hidden><h2>导入</h2><div class="jobs" id="jobs"></div></div>
     <h2>录音</h2>
     <div id="recs"></div>
   </aside>
@@ -170,6 +207,7 @@ mark { background: var(--play); color: inherit; padding: 0 1px; }
   </section>
 </div>
 
+<div class="drop" id="drop">松开即可导入并转写</div>
 <div class="toast" id="toast"></div>
 <div class="busy" id="busy"><div id="busyText">处理中…</div></div>
 
@@ -231,7 +269,7 @@ async function loadRecs() {
     </div>`).join("") : `<div class="empty">还没有录音。先运行<br><code>recorder transcribe 文件</code></div>`;
 }
 $("#recs").addEventListener("click", e => {
-  const el = e.target.closest(".rec"); if (el) openRec(+el.dataset.id);
+  const el = e.target.closest(".rec"); if (el) { stopLiveView(); openRec(+el.dataset.id); }
 });
 
 async function openRec(id, focusStart) {
@@ -247,7 +285,11 @@ function renderRec() {
   const r = state.rec;
   $("#main").innerHTML = `
     <div class="top">
-      <h2>${esc(r.name)}</h2>
+      <div class="title-row" id="titleRow">
+        <h2>${esc(r.name)}</h2>
+        ${r.title ? `<span class="file">${esc(r.file)}</span>` : ""}
+        <button class="link" id="renameBtn">改名</button>
+      </div>
       <audio id="audio" controls preload="metadata" src="/api/recordings/${r.id}/audio"></audio>
       <div class="toolbar">
         <span class="seg-toggle">
@@ -274,6 +316,7 @@ function renderRec() {
   $("#optScores").onchange = e => { state.scores = e.target.checked; localSet("scores", state.scores ? "1" : "0"); renderLines(); };
   $("#optLow").onchange = e => { state.low = e.target.checked; localSet("low", state.low ? "1" : "0"); renderLines(); };
   $("#enrollBtn").onclick = enrollSelected;
+  $("#renameBtn").onclick = startRename;
   $("#clearSel").onclick = () => { state.selected.clear(); renderLines(); };
   $("#audio").addEventListener("timeupdate", highlightPlaying);
   renderLines();
@@ -439,8 +482,201 @@ $("#main").addEventListener("click", e => {
   openRec(+h.dataset.rec, +h.dataset.start);
 });
 
+
+// ---------- rename ----------
+function startRename() {
+  const r = state.rec, row = $("#titleRow");
+  row.innerHTML = `<input type="text" id="titleIn" value="${esc(r.title || r.name)}" placeholder="${esc(r.file)}">
+    <button class="primary" id="titleSave">保存</button><button class="link" id="titleCancel">取消</button>`;
+  const inp = $("#titleIn"); inp.focus(); inp.select();
+  const save = async () => {
+    const title = inp.value.trim() === r.file ? "" : inp.value.trim();
+    try {
+      await api(`/api/recordings/${r.id}/rename`, { method: "POST", body: { title } });
+      await loadRecs(); state.rec = state.recs.find(x => x.id === r.id); renderRec();
+      toast(title ? "已改名" : "已恢复为文件名");
+    } catch (e) { toast("出错：" + e.message); }
+  };
+  $("#titleSave").onclick = save;
+  $("#titleCancel").onclick = renderRec;
+  inp.onkeydown = e => { if (e.key === "Enter") save(); if (e.key === "Escape") renderRec(); };
+}
+
+// ---------- import ----------
+$("#importBtn").onclick = () => $("#fileIn").click();
+$("#fileIn").onchange = e => { uploadFiles([...e.target.files]); e.target.value = ""; };
+let dragDepth = 0;
+addEventListener("dragenter", e => { if (e.dataTransfer.types.includes("Files")) { dragDepth++; $("#drop").classList.add("show"); } });
+addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("#drop").classList.remove("show"); } });
+addEventListener("dragover", e => e.preventDefault());
+addEventListener("drop", e => {
+  e.preventDefault(); dragDepth = 0; $("#drop").classList.remove("show");
+  uploadFiles([...e.dataTransfer.files]);
+});
+
+const uploading = [];
+async function uploadFiles(files) {
+  for (const f of files) {
+    const u = { name: f.name, status: "uploading" }; uploading.push(u); renderJobs();
+    try {
+      const res = await fetch(`/api/import?name=${encodeURIComponent(f.name)}&threshold=${state.threshold}`,
+        { method: "POST", body: f, headers: { "Content-Type": "application/octet-stream" } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+    } catch (e) { toast(`${f.name}：${e.message}`); }
+    uploading.splice(uploading.indexOf(u), 1);
+    pollJobs();
+  }
+}
+
+let jobsTimer, seenDone = new Set();
+async function pollJobs() {
+  clearTimeout(jobsTimer);
+  const jobs = await api("/api/jobs").catch(() => []);
+  renderJobs(jobs);
+  let changed = false;
+  for (const j of jobs) {
+    if (["done", "duplicate"].includes(j.status) && !seenDone.has(j.id)) {
+      seenDone.add(j.id); changed = true;
+      if (j.status === "duplicate") toast(`${j.name} 之前已经导入过`);
+    }
+  }
+  if (changed) await loadRecs();
+  if (jobs.some(j => ["queued", "running"].includes(j.status)) || uploading.length)
+    jobsTimer = setTimeout(pollJobs, 2000);
+}
+function renderJobs(jobs = renderJobs.last || []) {
+  renderJobs.last = jobs;
+  const label = { queued: "排队中", running: "转写中", done: "完成", duplicate: "已存在", error: "出错" };
+  const rows = [
+    ...uploading.map(u => `<div class="job"><span class="spin"></span><span class="jn">${esc(u.name)}</span><span class="st">上传中</span></div>`),
+    ...jobs.map(j => `<div class="job" ${j.recording ? `data-open="${j.recording}" style="cursor:pointer"` : ""}>
+      ${["queued", "running"].includes(j.status) ? `<span class="spin"></span>` : ""}
+      <span class="jn">${esc(j.name)}</span>
+      <span class="st ${j.status === "error" ? "err" : j.status === "done" ? "ok" : ""}" title="${esc(j.error || "")}">${label[j.status]}</span></div>`),
+  ];
+  $("#jobsBox").hidden = !rows.length;
+  $("#jobs").innerHTML = rows.join("");
+}
+$("#jobs").addEventListener("click", e => {
+  const el = e.target.closest("[data-open]"); if (el) { stopLiveView(); openRec(+el.dataset.open); }
+});
+
+// ---------- live recording ----------
+const live = { on: false, id: null, ctx: null, stream: null, node: null, buf: [], inflight: false,
+  timer: null, t0: 0, segs: [], partial: "", rate: 48000 };
+
+$("#liveBtn").onclick = showLive;
+function showLive() {
+  state.rec = null;
+  document.querySelectorAll(".rec").forEach(el => el.classList.remove("active"));
+  $("main").classList.remove("mode-turns");
+  $("#main").innerHTML = `<div class="live">
+    <div class="live-head">
+      <button class="big start" id="liveToggle">开始录音</button>
+      <span class="clock" id="liveClock">0:00</span>
+      <div class="meter"><div id="liveLevel"></div></div>
+      <span class="status" id="liveStatus">用麦克风录音，边录边转写并识别说话人。停止后自动保存为一条录音。</span>
+    </div>
+    <div class="lines" id="liveLines"></div>
+    <div class="partial" id="livePartial"></div>
+  </div>`;
+  $("#liveToggle").onclick = () => live.on ? stopLive() : startLive();
+  renderLive();
+}
+function stopLiveView() { if (live.on) stopLive(); }
+
+function renderLive() {
+  const lines = $("#liveLines"); if (!lines) return;
+  lines.innerHTML = live.segs.map(s => `<div class="line">
+      <span class="t">${fmt(s.start)}</span><span class="who">${chip(s.speaker)}</span>
+      <span class="text">${wordsHtml(s)}</span></div>`).join("");
+  $("#livePartial").textContent = live.partial ? live.partial + " …" : "";
+  lines.parentElement.classList.toggle("show-low", state.low);
+}
+
+const WORKLET = `class Cap extends AudioWorkletProcessor {
+  process(inputs) { const c = inputs[0] && inputs[0][0]; if (c) this.port.postMessage(c.slice(0)); return true; }
+} registerProcessor("cap", Cap);`;
+
+async function startLive() {
+  try {
+    live.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: true } });
+  } catch (e) { toast("拿不到麦克风：" + e.message); return; }
+  try {
+    live.id = (await api("/api/live/start", { method: "POST", body: { threshold: state.threshold } })).id;
+  } catch (e) { live.stream.getTracks().forEach(t => t.stop()); toast("出错：" + e.message); return; }
+  live.ctx = new AudioContext();
+  live.rate = live.ctx.sampleRate;
+  await live.ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })));
+  const src = live.ctx.createMediaStreamSource(live.stream);
+  live.node = new AudioWorkletNode(live.ctx, "cap");
+  live.node.port.onmessage = e => {
+    live.buf.push(e.data);
+    let sum = 0; for (const v of e.data) sum += v * v;
+    const lvl = $("#liveLevel"); if (lvl) lvl.style.width = Math.min(100, Math.sqrt(sum / e.data.length) * 400) + "%";
+  };
+  src.connect(live.node);
+  Object.assign(live, { on: true, segs: [], partial: "", t0: Date.now() });
+  $("#liveToggle").textContent = "停止"; $("#liveToggle").className = "big stop";
+  $("#liveStatus").innerHTML = `<span class="dot" style="display:inline-block"></span> 正在录音`;
+  $("#liveBtn").disabled = true;
+  live.timer = setInterval(() => {
+    const c = $("#liveClock"); if (c) c.textContent = fmt((Date.now() - live.t0) / 1000);
+    sendLive();
+  }, 1000);
+  renderLive();
+}
+
+function takeSamples() {
+  // concatenate captured chunks and resample to 16 kHz (linear interpolation)
+  const n = live.buf.reduce((a, b) => a + b.length, 0);
+  const all = new Float32Array(n); let o = 0;
+  for (const b of live.buf) { all.set(b, o); o += b.length; }
+  live.buf = [];
+  if (live.rate === 16000) return all;
+  const ratio = live.rate / 16000, out = new Float32Array(Math.floor(n / ratio));
+  for (let i = 0; i < out.length; i++) {
+    const x = i * ratio, j = Math.floor(x), f = x - j;
+    out[i] = all[j] * (1 - f) + (all[j + 1] ?? all[j]) * f;
+  }
+  return out;
+}
+
+async function sendLive() {
+  if (live.inflight || !live.buf.length || live.id == null) return;
+  live.inflight = true;
+  try {
+    const res = await fetch(`/api/live/${live.id}/audio`, { method: "POST", body: takeSamples(),
+      headers: { "Content-Type": "application/octet-stream" } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    live.segs.push(...data.committed); live.partial = data.partial;
+    renderLive();
+    const p = $("#livePartial"); if (p) p.scrollIntoView({ block: "nearest" });
+  } catch (e) { toast("转写出错：" + e.message); }
+  live.inflight = false;
+}
+
+async function stopLive() {
+  clearInterval(live.timer);
+  live.on = false;
+  live.node?.disconnect(); live.stream?.getTracks().forEach(t => t.stop()); await live.ctx?.close();
+  $("#liveBtn").disabled = false;
+  const btn = $("#liveToggle");
+  if (btn) { btn.textContent = "开始录音"; btn.className = "big start"; }
+  await busy("正在转写最后一段并保存…", async () => {
+    while (live.inflight) await new Promise(r => setTimeout(r, 100));
+    await sendLive();
+    const r = await api(`/api/live/${live.id}/stop`, { method: "POST", body: {} });
+    live.id = null;
+    if (r.recording) { await loadRecs(); openRec(r.recording); toast("已保存为一条录音，可以点“改名”起个名字"); }
+    else { live.segs.push(...r.committed); renderLive(); toast("录音太短，没有保存"); }
+  });
+}
+
 (async () => {
-  try { await Promise.all([loadRecs(), loadSpeakers()]); }
+  try { await Promise.all([loadRecs(), loadSpeakers()]); pollJobs(); }
   catch (e) { toast("连不上本地服务：" + e.message); return; }
   if (state.recs.length) openRec(state.recs[state.recs.length - 1].id);
 })();
