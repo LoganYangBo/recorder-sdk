@@ -12,7 +12,16 @@ Files are deduplicated by content hash, so re-running on the same folder is chea
 pip install -e '.[whisper,dev]'
 ```
 
-GPU: faster-whisper needs CUDA 12 + cuDNN 9 (see the faster-whisper README). `--device auto` uses the GPU when available.
+GPU: faster-whisper needs CUDA 12 cuBLAS + cuDNN 9. If they aren't installed system-wide
+(typical on Windows: `cublas64_12.dll is not found`), install them from pip:
+
+```bash
+pip install -e '.[whisper,cuda]'
+```
+
+On Windows the SDK adds those DLL folders to the search path automatically. `--device auto` uses the GPU when available.
+
+Windows PowerShell 5 doesn't support `&&`; run commands one per line.
 
 ## CLI
 

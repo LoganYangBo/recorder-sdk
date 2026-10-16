@@ -13,6 +13,8 @@ dependencies = []
 [project.optional-dependencies]
 # av 19 removed open(metadata_errors=...), which faster-whisper 1.2.1 still passes
 whisper = ["faster-whisper>=1.0", "av>=11,<19"]
+# CUDA runtime libs for the GPU, if not installed system-wide (needed on Windows)
+cuda = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9,<10"]
 dev = ["pytest>=8"]
 
 [project.scripts]

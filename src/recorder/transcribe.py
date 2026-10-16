@@ -1,9 +1,28 @@
 from __future__ import annotations
 
+import importlib.util
+import os
+import sys
 from pathlib import Path
 from typing import Protocol
 
 from .models import Segment, Transcript
+
+
+def _add_nvidia_dll_dirs() -> None:
+    """On Windows, make DLLs from the nvidia-cublas-cu12 / nvidia-cudnn-cu12
+    pip packages loadable. CTranslate2 loads cuBLAS/cuDNN lazily by name, so
+    their bin folders must be on PATH (Linux wheels set rpath; Windows doesn't).
+    """
+    if sys.platform != "win32":
+        return
+    spec = importlib.util.find_spec("nvidia")
+    if spec is None or not spec.submodule_search_locations:
+        return
+    for root in spec.submodule_search_locations:
+        for bin_dir in Path(root).glob("*/bin"):
+            os.add_dll_directory(str(bin_dir))
+            os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
 
 
 class Transcriber(Protocol):
@@ -36,6 +55,7 @@ class WhisperTranscriber:
 
     def _load(self):
         if self._model is None:
+            _add_nvidia_dll_dirs()
             try:
                 from faster_whisper import WhisperModel
             except ImportError as e:
