@@ -28,12 +28,25 @@ Windows PowerShell 5 doesn't support `&&`; run commands one per line.
 ```bash
 recorder transcribe ~/recordings/            # a file or a folder
 recorder transcribe a.m4a --model small --device cpu --compute-type int8
+recorder transcribe ~/recordings/ --hotwords "Logan nRF52840 XIAO"   # names Whisper mishears
+recorder transcribe ~/recordings/ --model large-v3 --reprocess       # redo files already in the db
 recorder list
 recorder show 1
 recorder search "hello"
 ```
 
 `--db` picks the SQLite file (default `recorder.db`).
+`--prompt` passes Whisper an initial prompt (a sentence in your own style and vocabulary); `--hotwords` biases it towards specific terms.
+
+## Data
+
+Each segment stores its text, speaker, `avg_logprob` and `no_speech_prob`, plus per-word
+timestamps and probabilities (`store.segments(id, words=True)`). Each recording stores the
+transcriber settings it was made with in `Recording.params` (model, prompt, hotwords, ...),
+so you can tell which recordings are worth re-running after a change.
+
+The schema is versioned with `PRAGMA user_version` and migrated automatically when a `Store`
+opens a database; existing databases are upgraded in place.
 
 ## Python
 
