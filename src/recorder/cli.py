@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .models import Transcript
+from . import ops
 from .pipeline import Pipeline
 from .store import Store
 from .sync import FolderSource
@@ -17,20 +17,12 @@ def _fmt(t: float) -> str:
 
 
 def _voiceprint_labeler(store: Store, args):
-    """VoiceprintLabeler over every enrolled voice, or None if nobody is enrolled."""
-    from .speaker import EcapaEmbedder, VoiceprintLabeler
+    from .speaker import EcapaEmbedder
 
-    vps = store.voiceprints()
-    if not vps:
-        return None
-    import numpy as np
-
-    embedder = EcapaEmbedder(device=args.device)
-    stale = [name for name, (model, _) in vps.items() if model != embedder.name]
-    if stale:
-        raise SystemExit(f"voiceprints {stale} were made with another model; enroll them again")
-    voices = {name: np.frombuffer(blob, dtype=np.float32) for name, (_, blob) in vps.items()}
-    return VoiceprintLabeler(embedder, voices, args.threshold)
+    try:
+        return ops.voiceprint_labeler(store, EcapaEmbedder(device=args.device), args.threshold)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
 
 
 def _parse_indices(text: str) -> list[int]:
@@ -43,31 +35,21 @@ def _parse_indices(text: str) -> list[int]:
 
 
 def cmd_enroll(args) -> None:
-    from .speaker import SAMPLE_RATE, EcapaEmbedder, enroll, load_audio
+    from .speaker import EcapaEmbedder, load_audio
 
-    if args.name in ("other", ""):
-        raise SystemExit(f"'{args.name}' can't be used as a name")
     with Store(args.db) as store:
-        audios = [load_audio(p) for p in args.paths]
-        source = f"{len(args.paths)} file(s)"
-        if args.recording is not None:
-            rec = store.recording(args.recording)
-            if rec is None:
-                raise SystemExit(f"no recording {args.recording}")
-            segments = store.segments(rec.id)
-            idx = _parse_indices(args.segments) if args.segments else []
-            if not idx or not all(1 <= i <= len(segments) for i in idx):
-                raise SystemExit(f"--segments must be numbers 1..{len(segments)} from `show`")
-            audio = load_audio(rec.path)
-            for i in idx:
-                seg = segments[i - 1]
-                audios.append(audio[int(seg.start * SAMPLE_RATE) : int(seg.end * SAMPLE_RATE)])
-            source += f" + {len(idx)} segment(s) of recording {rec.id}"
-        if not audios:
-            raise SystemExit("give audio files and/or --recording ID --segments N,M")
-        embedder = EcapaEmbedder(device=args.device)
-        vec = enroll(embedder, audios)
-        store.save_voiceprint(args.name, embedder.name, vec.tobytes())
+        try:
+            audios = [load_audio(p) for p in args.paths]
+            source = f"{len(args.paths)} file(s)"
+            if args.recording is not None:
+                idx = _parse_indices(args.segments) if args.segments else []
+                audios += ops.segment_audio(store, args.recording, idx)
+                source += f" + {len(idx)} segment(s) of recording {args.recording}"
+            if not audios:
+                raise ValueError("give audio files and/or --recording ID --segments N,M")
+            ops.enroll_voice(store, EcapaEmbedder(device=args.device), args.name, audios)
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
     print(f"saved voiceprint '{args.name}' from {source}")
 
 
@@ -87,14 +69,8 @@ def cmd_relabel(args) -> None:
         if labeler is None:
             raise SystemExit("no voiceprints yet: run `recorder enroll my_voice.m4a` first")
         ids = args.recording_ids or [r.id for r in store.recordings()]
-        pipe = Pipeline(None, store, labeler)
+        ops.relabel(store, labeler, ids, args.rescore)
         for rid in ids:
-            if args.rescore:
-                pipe.relabel(rid)
-            else:  # only re-apply the threshold to stored scores
-                segs = store.segments(rid)
-                labeler.relabel(Transcript("", 0.0, segs))
-                store.set_speakers(rid, segs)
             print(f"recording {rid}: relabelled")
 
 
@@ -120,6 +96,14 @@ def cmd_transcribe(args) -> None:
                     "skip (already in db)" if r.skipped else f"ok -> recording {r.recording_id}"
                 )
                 print(f"{r.path}: {status}")
+
+
+def cmd_ui(args) -> None:
+    from .web import serve
+
+    serve(
+        args.db, host=args.host, port=args.port, device=args.device, open_browser=not args.no_open
+    )
 
 
 def cmd_show(args) -> None:
@@ -199,6 +183,13 @@ def main(argv: list[str] | None = None) -> None:
     s.set_defaults(func=cmd_show)
 
     sub.add_parser("list", help="list recordings").set_defaults(func=cmd_list)
+
+    u = sub.add_parser("ui", help="open the web UI in your browser")
+    u.add_argument("--port", type=int, default=8765)
+    u.add_argument("--host", default="127.0.0.1", help="keep the default to stay local-only")
+    u.add_argument("--device", default="auto", help="speaker model: auto / cuda / cpu")
+    u.add_argument("--no-open", action="store_true", help="don't open a browser")
+    u.set_defaults(func=cmd_ui)
 
     q = sub.add_parser("search", help="search transcript text")
     q.add_argument("query")

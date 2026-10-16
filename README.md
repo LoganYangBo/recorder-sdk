@@ -48,6 +48,19 @@ so you can tell which recordings are worth re-running after a change.
 The schema is versioned with `PRAGMA user_version` and migrated automatically when a `Store`
 opens a database; existing databases are upgraded in place.
 
+## Web UI
+
+```bash
+recorder ui                           # opens http://127.0.0.1:8765 in your browser
+```
+
+Browse recordings, play audio from any segment or word (click the time or a word), switch
+between segments and merged speaker turns, see low-confidence words underlined, and search
+all transcripts. Under 说话人 you can list and delete voiceprints and tune the threshold;
+tick segments in a transcript and enter a name to enroll that person. Transcription still
+runs from the CLI. The server only listens on localhost and needs no extra packages
+(enrolling and re-scoring need the `[speaker]` extra).
+
 ## Who is speaking
 
 Each segment is labelled with the enrolled person whose voiceprint it matches best (SpeechBrain
