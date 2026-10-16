@@ -19,3 +19,35 @@ def test_nvidia_dll_dirs_added_on_windows(tmp_path, monkeypatch):
 
     assert sorted(os.path.basename(os.path.dirname(d)) for d in added) == ["cublas", "cudnn"]
     assert os.environ["PATH"].endswith("orig") and "cublas" in os.environ["PATH"]
+
+
+def test_whisper_passes_options_and_keeps_words(monkeypatch):
+    calls = {}
+
+    class W:
+        def __init__(self, start, end, word, probability):
+            self.start, self.end, self.word, self.probability = start, end, word, probability
+
+    class S:
+        start, end, text, avg_logprob, no_speech_prob = 0.0, 1.0, " hi Logan", -0.3, 0.02
+        words = [W(0.0, 0.3, " hi", 0.9), W(0.3, 1.0, " Logan", 0.5)]
+
+    class Info:
+        language, duration = "en", 1.0
+
+    class FakeModel:
+        def transcribe(self, path, **kw):
+            calls.update(kw)
+            return iter([S()]), Info()
+
+    t = transcribe.WhisperTranscriber(model="small", hotwords="Logan", initial_prompt="Hi Logan.")
+    t._model = FakeModel()
+    out = t.transcribe("a.wav")
+
+    assert calls["hotwords"] == "Logan" and calls["initial_prompt"] == "Hi Logan."
+    assert calls["word_timestamps"] is True
+    (seg,) = out.segments
+    assert seg.text == "hi Logan" and seg.avg_logprob == -0.3
+    assert [w.word for w in seg.words] == ["hi", "Logan"]
+    assert out.params["model"] == "small" and out.params["hotwords"] == "Logan"
+    assert "initial_prompt" in out.params and "language" not in out.params

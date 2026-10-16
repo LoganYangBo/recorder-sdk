@@ -18,10 +18,15 @@ def cmd_transcribe(args) -> None:
     from .transcribe import WhisperTranscriber
 
     transcriber = WhisperTranscriber(
-        model=args.model, device=args.device, compute_type=args.compute_type, language=args.language
+        model=args.model,
+        device=args.device,
+        compute_type=args.compute_type,
+        language=args.language,
+        initial_prompt=args.prompt,
+        hotwords=args.hotwords,
     )
     with Store(args.db) as store:
-        pipe = Pipeline(transcriber, store)
+        pipe = Pipeline(transcriber, store, reprocess=args.reprocess)
         for target in args.paths:
             p = Path(target)
             results = pipe.process_source(FolderSource(p)) if p.is_dir() else [pipe.process_file(p)]
@@ -40,7 +45,8 @@ def cmd_show(args) -> None:
 def cmd_list(args) -> None:
     with Store(args.db) as store:
         for r in store.recordings():
-            print(f"{r.id:>4}  {_fmt(r.duration)}  {r.language}  {r.path}")
+            model = r.params.get("model", "?")
+            print(f"{r.id:>4}  {_fmt(r.duration)}  {r.language}  {model:<10}  {r.path}")
 
 
 def cmd_search(args) -> None:
@@ -60,6 +66,11 @@ def main(argv: list[str] | None = None) -> None:
     t.add_argument("--device", default="auto", help="auto / cuda / cpu")
     t.add_argument("--compute-type", default="default", help="e.g. float16, int8_float16, int8")
     t.add_argument("--language", default=None, help="force language, e.g. en / zh")
+    t.add_argument("--prompt", default=None, help="initial prompt, e.g. a sentence with your jargon")
+    t.add_argument("--hotwords", default=None, help='names/terms to favour, e.g. "Logan nRF52840"')
+    t.add_argument(
+        "--reprocess", action="store_true", help="re-transcribe files already in the database"
+    )
     t.set_defaults(func=cmd_transcribe)
 
     s = sub.add_parser("show", help="print a recording's transcript")

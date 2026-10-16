@@ -1,4 +1,4 @@
-from .models import Recording, Segment, Transcript
+from .models import Recording, Segment, Transcript, Word
 from .pipeline import Pipeline, Result
 from .speaker import NoopLabeler, SpeakerLabeler
 from .store import Store
@@ -19,4 +19,5 @@ __all__ = [
     "Transcriber",
     "Transcript",
     "WhisperTranscriber",
+    "Word",
 ]
