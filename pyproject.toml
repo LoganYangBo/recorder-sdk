@@ -15,6 +15,8 @@ dependencies = []
 whisper = ["faster-whisper>=1.1", "av>=11,<19"]
 # CUDA runtime libs for the GPU, if not installed system-wide (needed on Windows)
 cuda = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9,<10"]
+# me/other speaker labelling (pulls in torch); load_audio uses faster-whisper
+speaker = ["speechbrain>=1.0", "faster-whisper>=1.1", "av>=11,<19"]
 dev = ["pytest>=8"]
 
 [project.scripts]

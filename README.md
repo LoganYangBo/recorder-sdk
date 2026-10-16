@@ -3,7 +3,7 @@
 Transcription pipeline SDK for an all-day wearable recorder (XIAO nRF52840 Sense + microSD, synced over USB).
 For now it runs on any audio file, e.g. phone recordings.
 
-Pipeline: audio file → faster-whisper → speaker label (me / other, stub) → SQLite.
+Pipeline: audio file → faster-whisper → speaker label (me / other, by voiceprint) → SQLite.
 Files are deduplicated by content hash, so re-running on the same folder is cheap.
 
 ## Install
@@ -48,6 +48,24 @@ so you can tell which recordings are worth re-running after a change.
 The schema is versioned with `PRAGMA user_version` and migrated automatically when a `Store`
 opens a database; existing databases are upgraded in place.
 
+## Me / other
+
+Speaker labels compare each segment with your voiceprint (SpeechBrain ECAPA; the ~80 MB model
+downloads from Hugging Face on first use).
+
+```bash
+pip install -e '.[whisper,speaker]'
+recorder enroll my_voice.m4a          # 1-2 min of only you talking; run once
+recorder transcribe ~/recordings/     # labels segments [me] / [other] once enrolled
+recorder show 1 --turns               # merge consecutive segments into speaker turns
+recorder show 1 --scores              # similarity per segment, to pick a threshold
+recorder relabel --threshold 0.4      # re-apply a threshold to stored scores (instant)
+recorder relabel 1 --rescore          # re-embed audio, e.g. after a new enroll
+```
+
+The default threshold is 0.3; check `--scores` on a recording you know and adjust.
+Recordings transcribed before enrolling can be labelled with `recorder relabel --rescore`.
+
 ## Python
 
 ```python
@@ -60,9 +78,9 @@ with Store("recorder.db") as store:
         print(rec.path, seg.start, seg.text)
 ```
 
-## Extension points (not implemented yet)
+## Extension points
 
-- `SpeakerLabeler` (`speaker.py`): set `Segment.speaker` to `"me"` / `"other"` using a voiceprint. Default `NoopLabeler` leaves it `None`.
+- `SpeakerLabeler` (`speaker.py`): sets `Segment.speaker`. `VoiceprintLabeler` takes any `Embedder`; `NoopLabeler` leaves it `None`.
 - `AudioSource` (`sync.py`): where files come from. `FolderSource` today; a USB device source later, which also fills `started_at`.
 
 ## Tests

@@ -45,11 +45,20 @@ MIGRATIONS = [
     );
     CREATE INDEX idx_words_segment ON words(segment_id);
     """,
+    """
+    ALTER TABLE segments ADD COLUMN speaker_score REAL;
+    CREATE TABLE voiceprints (
+        name        TEXT PRIMARY KEY,
+        model       TEXT NOT NULL,
+        embedding   BLOB NOT NULL,  -- float32 vector
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
 _REC_COLS = "r.id, r.path, r.sha256, r.started_at, r.duration, r.language, r.params"
-_SEG_COLS = "s.start, s.end, s.text, s.speaker, s.avg_logprob, s.no_speech_prob"
+_SEG_COLS = "s.start, s.end, s.text, s.speaker, s.avg_logprob, s.no_speech_prob, s.speaker_score"
 
 
 def _rec(row) -> Recording:
@@ -59,9 +68,7 @@ def _rec(row) -> Recording:
 def migrate(conn: sqlite3.Connection) -> None:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version > SCHEMA_VERSION:
-        raise RuntimeError(
-            f"database schema v{version} is newer than this SDK (v{SCHEMA_VERSION})"
-        )
+        raise RuntimeError(f"database schema v{version} is newer than this SDK (v{SCHEMA_VERSION})")
     for i in range(version, SCHEMA_VERSION):
         # executescript commits on its own, so each migration and its version
         # bump run as one script inside an explicit transaction
@@ -125,9 +132,18 @@ class Store:
             for s in transcript.segments:
                 cur = self.conn.execute(
                     "INSERT INTO segments "
-                    "(recording_id, start, end, text, speaker, avg_logprob, no_speech_prob) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (rid, s.start, s.end, s.text, s.speaker, s.avg_logprob, s.no_speech_prob),
+                    "(recording_id, start, end, text, speaker, avg_logprob, no_speech_prob, "
+                    " speaker_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        rid,
+                        s.start,
+                        s.end,
+                        s.text,
+                        s.speaker,
+                        s.avg_logprob,
+                        s.no_speech_prob,
+                        s.speaker_score,
+                    ),
                 )
                 self.conn.executemany(
                     "INSERT INTO words (segment_id, start, end, word, probability) "
@@ -136,13 +152,20 @@ class Store:
                 )
         return rid
 
+    def recording(self, recording_id: int) -> Recording | None:
+        row = self.conn.execute(
+            f"SELECT {_REC_COLS} FROM recordings r WHERE r.id = ?", (recording_id,)
+        ).fetchone()
+        return _rec(row) if row else None
+
     def recordings(self) -> list[Recording]:
         rows = self.conn.execute(f"SELECT {_REC_COLS} FROM recordings r ORDER BY r.id").fetchall()
         return [_rec(r) for r in rows]
 
     def segments(self, recording_id: int, words: bool = False) -> list[Segment]:
         rows = self.conn.execute(
-            f"SELECT s.id, {_SEG_COLS} FROM segments s WHERE s.recording_id = ? ORDER BY s.start",
+            f"SELECT s.id, {_SEG_COLS} FROM segments s WHERE s.recording_id = ? "
+            "ORDER BY s.start, s.id",
             (recording_id,),
         ).fetchall()
         segs = {r[0]: Segment(*r[1:]) for r in rows}
@@ -155,6 +178,39 @@ class Store:
             ):
                 segs[seg_id].words.append(Word(*w))
         return list(segs.values())
+
+    def set_speakers(self, recording_id: int, segments: list[Segment]) -> None:
+        """Update speaker labels of a recording's segments, given in `segments()` order."""
+        ids = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT id FROM segments WHERE recording_id = ? ORDER BY start, id",
+                (recording_id,),
+            )
+        ]
+        if len(ids) != len(segments):
+            raise ValueError(
+                f"recording {recording_id} has {len(ids)} segments, got {len(segments)}"
+            )
+        with self.conn:
+            self.conn.executemany(
+                "UPDATE segments SET speaker = ?, speaker_score = ? WHERE id = ?",
+                [(s.speaker, s.speaker_score, i) for s, i in zip(segments, ids)],
+            )
+
+    def save_voiceprint(self, name: str, model: str, embedding: bytes) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO voiceprints (name, model, embedding) VALUES (?, ?, ?)",
+                (name, model, embedding),
+            )
+
+    def voiceprint(self, name: str = "me") -> tuple[str, bytes] | None:
+        """(model, float32 embedding bytes) for an enrolled voice, or None."""
+        row = self.conn.execute(
+            "SELECT model, embedding FROM voiceprints WHERE name = ?", (name,)
+        ).fetchone()
+        return (row[0], row[1]) if row else None
 
     def search(self, query: str, limit: int = 50) -> list[tuple[Recording, Segment]]:
         rows = self.conn.execute(

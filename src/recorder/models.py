@@ -19,6 +19,7 @@ class Segment:
     speaker: str | None = None  # "me" / "other" / None (unknown)
     avg_logprob: float | None = None  # segment confidence; below about -1 is usually unreliable
     no_speech_prob: float | None = None
+    speaker_score: float | None = None  # similarity to the wearer's voiceprint, -1..1
     words: list[Word] = field(default_factory=list)
 
 
