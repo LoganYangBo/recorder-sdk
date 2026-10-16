@@ -1,10 +1,13 @@
-"""Speaker labelling: is a segment the wearer ("me") or someone else ("other")?
+"""Speaker labelling: who said each segment — "me" (the wearer), a person
+you have enrolled by name, or "other".
 
-Enroll once from a recording of only your own voice (`recorder enroll`),
-which stores an averaged speaker embedding (voiceprint) in the database.
-Each transcribed segment is then embedded and compared with it by cosine
-similarity; the score is kept on the segment so the threshold can be tuned
-later with `recorder relabel` without re-transcribing.
+Enroll yourself once from a recording of only your own voice
+(`recorder enroll`), and other people from segments of existing recordings
+(`recorder enroll --name Alice --recording 3 --segments 4,7,12`). Each
+voiceprint is an averaged speaker embedding stored in the database. Each
+transcribed segment is embedded and compared with every voiceprint by cosine
+similarity; the best match and score are kept on the segment so the threshold
+can be tuned later with `recorder relabel` without re-embedding.
 """
 
 from __future__ import annotations
@@ -96,36 +99,52 @@ def _normalize(v: np.ndarray) -> np.ndarray:
 
 
 def enroll(embedder: Embedder, audios: list[np.ndarray], window: float = 3.0) -> np.ndarray:
-    """Average embedding of `window`-second chunks of recordings of only the
-    wearer speaking. Near-silent chunks are skipped. Returns a unit vector.
+    """Average embedding of recordings of one person speaking, cut into
+    `window`-second chunks (shorter clips of at least 1 s are used whole).
+    Near-silent chunks are skipped. Returns a unit vector.
     """
     import numpy as np
 
     n = int(window * SAMPLE_RATE)
-    chunks = [a[i : i + n] for a in audios for i in range(0, len(a) - n + 1, n)]
+    chunks = []
+    for a in audios:
+        if len(a) < n:
+            if len(a) >= SAMPLE_RATE:
+                chunks.append(a)
+        else:
+            chunks.extend(a[i : i + n] for i in range(0, len(a) - n + 1, n))
     if not chunks:
-        raise ValueError(f"need at least {window:.0f}s of audio to enroll")
+        raise ValueError("need at least 1 s of audio to enroll")
     rms = np.array([np.sqrt(np.mean(c**2)) for c in chunks])
     voiced = [c for c, r in zip(chunks, rms) if r >= 0.25 * np.median(rms)]
     return _normalize(np.mean([_normalize(embedder.embed(c)) for c in voiced], axis=0))
 
 
 class VoiceprintLabeler:
-    """Labels segments "me" when their embedding's cosine similarity to the
-    voiceprint is at least `threshold`, else "other". Segments shorter than
-    `min_duration` are widened around their centre, since embeddings of very
-    short clips are unreliable.
+    """Labels each segment with the enrolled person whose voiceprint it is
+    most similar to (cosine), or "other" when even the best match is below
+    `threshold`. The wearer is enrolled as "me". The best match and its score
+    are kept on the segment (speaker_match / speaker_score), so the threshold
+    can be changed later without re-embedding.
+
+    Segments shorter than `min_duration` are widened around their centre,
+    since embeddings of very short clips are unreliable.
     """
 
     def __init__(
         self,
         embedder: Embedder,
-        voiceprint: np.ndarray,
+        voiceprints: dict[str, np.ndarray],
         threshold: float = 0.3,
         min_duration: float = 1.5,
     ):
+        import numpy as np
+
+        if not voiceprints:
+            raise ValueError("no voiceprints enrolled")
         self.embedder = embedder
-        self.voiceprint = _normalize(voiceprint)
+        self.names = list(voiceprints)
+        self.matrix = np.stack([_normalize(v) for v in voiceprints.values()])
         self.threshold = threshold
         self.min_duration = min_duration
 
@@ -140,14 +159,17 @@ class VoiceprintLabeler:
         for s in transcript.segments:
             clip = self._clip(audio, s.start, s.end)
             if len(clip) < SAMPLE_RATE // 4:  # under 0.25 s: nothing to go on
-                s.speaker, s.speaker_score = None, None
+                s.speaker = s.speaker_match = s.speaker_score = None
                 continue
-            s.speaker_score = float(self.voiceprint @ _normalize(self.embedder.embed(clip)))
+            scores = self.matrix @ _normalize(self.embedder.embed(clip))
+            best = int(scores.argmax())
+            s.speaker_match, s.speaker_score = self.names[best], float(scores[best])
         return self.relabel(transcript)
 
     def relabel(self, transcript: Transcript) -> Transcript:
-        """Apply the threshold to scores already on the segments."""
+        """Apply the threshold to the best matches already on the segments."""
         for s in transcript.segments:
             if s.speaker_score is not None:
-                s.speaker = "me" if s.speaker_score >= self.threshold else "other"
+                ok = s.speaker_score >= self.threshold
+                s.speaker = s.speaker_match if ok else "other"
         return transcript

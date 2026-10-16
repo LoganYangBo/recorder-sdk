@@ -16,10 +16,11 @@ class Segment:
     start: float  # seconds from the start of the recording
     end: float
     text: str
-    speaker: str | None = None  # "me" / "other" / None (unknown)
+    speaker: str | None = None  # "me" / an enrolled name / "other" / None (not labelled)
     avg_logprob: float | None = None  # segment confidence; below about -1 is usually unreliable
     no_speech_prob: float | None = None
-    speaker_score: float | None = None  # similarity to the wearer's voiceprint, -1..1
+    speaker_score: float | None = None  # similarity to the best-matching voiceprint, -1..1
+    speaker_match: str | None = None  # that voiceprint's name, even if below the threshold
     words: list[Word] = field(default_factory=list)
 
 

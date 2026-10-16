@@ -54,11 +54,18 @@ MIGRATIONS = [
         created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
     """,
+    """
+    ALTER TABLE segments ADD COLUMN speaker_match TEXT;
+    UPDATE segments SET speaker_match = 'me' WHERE speaker_score IS NOT NULL;
+    """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
 _REC_COLS = "r.id, r.path, r.sha256, r.started_at, r.duration, r.language, r.params"
-_SEG_COLS = "s.start, s.end, s.text, s.speaker, s.avg_logprob, s.no_speech_prob, s.speaker_score"
+_SEG_COLS = (
+    "s.start, s.end, s.text, s.speaker, s.avg_logprob, s.no_speech_prob, "
+    "s.speaker_score, s.speaker_match"
+)
 
 
 def _rec(row) -> Recording:
@@ -133,7 +140,7 @@ class Store:
                 cur = self.conn.execute(
                     "INSERT INTO segments "
                     "(recording_id, start, end, text, speaker, avg_logprob, no_speech_prob, "
-                    " speaker_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    " speaker_score, speaker_match) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         rid,
                         s.start,
@@ -143,6 +150,7 @@ class Store:
                         s.avg_logprob,
                         s.no_speech_prob,
                         s.speaker_score,
+                        s.speaker_match,
                     ),
                 )
                 self.conn.executemany(
@@ -194,8 +202,9 @@ class Store:
             )
         with self.conn:
             self.conn.executemany(
-                "UPDATE segments SET speaker = ?, speaker_score = ? WHERE id = ?",
-                [(s.speaker, s.speaker_score, i) for s, i in zip(segments, ids)],
+                "UPDATE segments SET speaker = ?, speaker_score = ?, speaker_match = ? "
+                "WHERE id = ?",
+                [(s.speaker, s.speaker_score, s.speaker_match, i) for s, i in zip(segments, ids)],
             )
 
     def save_voiceprint(self, name: str, model: str, embedding: bytes) -> None:
@@ -204,6 +213,18 @@ class Store:
                 "INSERT OR REPLACE INTO voiceprints (name, model, embedding) VALUES (?, ?, ?)",
                 (name, model, embedding),
             )
+
+    def voiceprints(self) -> dict[str, tuple[str, bytes]]:
+        """All enrolled voices: name -> (model, float32 embedding bytes)."""
+        rows = self.conn.execute(
+            "SELECT name, model, embedding FROM voiceprints ORDER BY name"
+        ).fetchall()
+        return {name: (model, emb) for name, model, emb in rows}
+
+    def delete_voiceprint(self, name: str) -> bool:
+        with self.conn:
+            cur = self.conn.execute("DELETE FROM voiceprints WHERE name = ?", (name,))
+        return cur.rowcount > 0
 
     def voiceprint(self, name: str = "me") -> tuple[str, bytes] | None:
         """(model, float32 embedding bytes) for an enrolled voice, or None."""

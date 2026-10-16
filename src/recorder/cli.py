@@ -17,36 +17,75 @@ def _fmt(t: float) -> str:
 
 
 def _voiceprint_labeler(store: Store, args):
-    """VoiceprintLabeler from the enrolled "me" voiceprint, or None if not enrolled."""
+    """VoiceprintLabeler over every enrolled voice, or None if nobody is enrolled."""
     from .speaker import EcapaEmbedder, VoiceprintLabeler
 
-    vp = store.voiceprint("me")
-    if vp is None:
+    vps = store.voiceprints()
+    if not vps:
         return None
     import numpy as np
 
-    model, blob = vp
     embedder = EcapaEmbedder(device=args.device)
-    if model != embedder.name:
-        raise SystemExit(f"voiceprint was made with {model}; re-run `recorder enroll`")
-    return VoiceprintLabeler(embedder, np.frombuffer(blob, dtype=np.float32), args.threshold)
+    stale = [name for name, (model, _) in vps.items() if model != embedder.name]
+    if stale:
+        raise SystemExit(f"voiceprints {stale} were made with another model; enroll them again")
+    voices = {name: np.frombuffer(blob, dtype=np.float32) for name, (_, blob) in vps.items()}
+    return VoiceprintLabeler(embedder, voices, args.threshold)
+
+
+def _parse_indices(text: str) -> list[int]:
+    """'4,7,10-12' -> [4, 7, 10, 11, 12]"""
+    out = []
+    for part in text.split(","):
+        lo, _, hi = part.strip().partition("-")
+        out.extend(range(int(lo), int(hi or lo) + 1))
+    return out
 
 
 def cmd_enroll(args) -> None:
-    from .speaker import EcapaEmbedder, enroll, load_audio
+    from .speaker import SAMPLE_RATE, EcapaEmbedder, enroll, load_audio
 
-    embedder = EcapaEmbedder(device=args.device)
-    vec = enroll(embedder, [load_audio(p) for p in args.paths])
+    if args.name in ("other", ""):
+        raise SystemExit(f"'{args.name}' can't be used as a name")
     with Store(args.db) as store:
-        store.save_voiceprint("me", embedder.name, vec.tobytes())
-    print(f"saved voiceprint 'me' from {len(args.paths)} file(s)")
+        audios = [load_audio(p) for p in args.paths]
+        source = f"{len(args.paths)} file(s)"
+        if args.recording is not None:
+            rec = store.recording(args.recording)
+            if rec is None:
+                raise SystemExit(f"no recording {args.recording}")
+            segments = store.segments(rec.id)
+            idx = _parse_indices(args.segments) if args.segments else []
+            if not idx or not all(1 <= i <= len(segments) for i in idx):
+                raise SystemExit(f"--segments must be numbers 1..{len(segments)} from `show`")
+            audio = load_audio(rec.path)
+            for i in idx:
+                seg = segments[i - 1]
+                audios.append(audio[int(seg.start * SAMPLE_RATE) : int(seg.end * SAMPLE_RATE)])
+            source += f" + {len(idx)} segment(s) of recording {rec.id}"
+        if not audios:
+            raise SystemExit("give audio files and/or --recording ID --segments N,M")
+        embedder = EcapaEmbedder(device=args.device)
+        vec = enroll(embedder, audios)
+        store.save_voiceprint(args.name, embedder.name, vec.tobytes())
+    print(f"saved voiceprint '{args.name}' from {source}")
+
+
+def cmd_speakers(args) -> None:
+    with Store(args.db) as store:
+        if args.forget:
+            ok = store.delete_voiceprint(args.forget)
+            print(f"forgot '{args.forget}'" if ok else f"no voiceprint '{args.forget}'")
+            return
+        for name in store.voiceprints():
+            print(name)
 
 
 def cmd_relabel(args) -> None:
     with Store(args.db) as store:
         labeler = _voiceprint_labeler(store, args)
         if labeler is None:
-            raise SystemExit("no voiceprint yet: run `recorder enroll my_voice.m4a` first")
+            raise SystemExit("no voiceprints yet: run `recorder enroll my_voice.m4a` first")
         ids = args.recording_ids or [r.id for r in store.recordings()]
         pipe = Pipeline(None, store, labeler)
         for rid in ids:
@@ -91,11 +130,12 @@ def cmd_show(args) -> None:
             who = f"[{t.speaker}] " if t.speaker else ""
             print(f"{_fmt(t.start)}  {who}{t.text}")
         return
-    for seg in segments:
+    for i, seg in enumerate(segments, 1):
         who = f"[{seg.speaker}] " if seg.speaker else ""
         if args.scores and seg.speaker_score is not None:
-            who = f"[{seg.speaker} {seg.speaker_score:+.2f}] "
-        print(f"{_fmt(seg.start)}  {who}{seg.text}")
+            match = "" if seg.speaker_match == seg.speaker else f" ~{seg.speaker_match}"
+            who = f"[{seg.speaker}{match} {seg.speaker_score:+.2f}] "
+        print(f"{i:>4}  {_fmt(seg.start)}  {who}{seg.text}")
 
 
 def cmd_list(args) -> None:
@@ -130,17 +170,24 @@ def main(argv: list[str] | None = None) -> None:
         "--reprocess", action="store_true", help="re-transcribe files already in the database"
     )
     t.add_argument("--no-speakers", action="store_true", help="skip me/other labelling")
-    t.add_argument("--threshold", type=float, default=0.3, help="voiceprint similarity for 'me'")
+    t.add_argument("--threshold", type=float, default=0.3, help="min voiceprint similarity")
     t.set_defaults(func=cmd_transcribe)
 
-    e = sub.add_parser("enroll", help="save your voiceprint from recordings of only your voice")
-    e.add_argument("paths", nargs="+")
+    e = sub.add_parser("enroll", help="save a voiceprint (yours by default)")
+    e.add_argument("paths", nargs="*", help="audio files of only this person speaking")
+    e.add_argument("--name", default="me", help='who this is; "me" is the wearer')
+    e.add_argument("--recording", type=int, help="take audio from this recording's segments...")
+    e.add_argument("--segments", help="...numbered as in `show`, e.g. 4,7,10-12")
     e.add_argument("--device", default="auto", help="auto / cuda / cpu")
     e.set_defaults(func=cmd_enroll)
 
+    sp = sub.add_parser("speakers", help="list enrolled voiceprints")
+    sp.add_argument("--forget", metavar="NAME", help="delete a voiceprint")
+    sp.set_defaults(func=cmd_speakers)
+
     r = sub.add_parser("relabel", help="redo me/other labels without re-transcribing")
     r.add_argument("recording_ids", nargs="*", type=int, help="default: all recordings")
-    r.add_argument("--threshold", type=float, default=0.3, help="voiceprint similarity for 'me'")
+    r.add_argument("--threshold", type=float, default=0.3, help="min voiceprint similarity")
     r.add_argument("--rescore", action="store_true", help="re-embed the audio (after a new enroll)")
     r.add_argument("--device", default="auto", help="auto / cuda / cpu")
     r.set_defaults(func=cmd_relabel)

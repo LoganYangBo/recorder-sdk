@@ -38,14 +38,17 @@ def test_enroll_skips_silence():
 
 def test_enroll_needs_enough_audio():
     with pytest.raises(ValueError):
-        enroll(BandEmbedder(), [tone(200, 1)])
+        enroll(BandEmbedder(), [tone(200, 0.5)])
+    emb = BandEmbedder()
+    enroll(emb, [tone(200, 1.2)])  # a short segment is used whole
+    assert emb.lengths == [int(1.2 * SR)]
 
 
 def test_labels_me_and_other(monkeypatch):
     audio = np.concatenate([tone(200, 3), tone(800, 3), tone(200, 0.5)])
     monkeypatch.setattr(speaker_mod, "load_audio", lambda path: audio)
     emb = BandEmbedder()
-    labeler = VoiceprintLabeler(emb, np.array([1.0, 0.0]), threshold=0.5, min_duration=0.5)
+    labeler = VoiceprintLabeler(emb, {"me": np.array([1.0, 0.0])}, threshold=0.5, min_duration=0.5)
     t = Transcript(
         "en",
         6.5,
@@ -64,7 +67,7 @@ def test_labels_me_and_other(monkeypatch):
 def test_short_segments_are_widened(monkeypatch):
     monkeypatch.setattr(speaker_mod, "load_audio", lambda path: tone(200, 10))
     emb = BandEmbedder()
-    labeler = VoiceprintLabeler(emb, np.array([1.0, 0.0]), min_duration=2.0)
+    labeler = VoiceprintLabeler(emb, {"me": np.array([1.0, 0.0])}, min_duration=2.0)
     labeler.label("x.wav", Transcript("en", 10, [Segment(5.0, 5.2, "uh")]))
     assert emb.lengths == [2 * SR]
 
@@ -96,7 +99,7 @@ def test_relabel_stored_recording(tmp_path, monkeypatch):
     with Store(tmp_path / "t.db") as store:
         t = Transcript("en", 4, [Segment(0, 2, "a"), Segment(2, 4, "b")])
         rid = store.save(audio_path, "h", t)
-        labeler = VoiceprintLabeler(BandEmbedder(), np.array([1.0, 0.0]), threshold=0.5)
+        labeler = VoiceprintLabeler(BandEmbedder(), {"me": np.array([1.0, 0.0])}, threshold=0.5)
         Pipeline(None, store, labeler).relabel(rid)
         segs = store.segments(rid)
         assert [s.speaker for s in segs] == ["me", "other"]
@@ -107,7 +110,12 @@ def test_cli_relabel_threshold_only(tmp_path, capsys):
     db = str(tmp_path / "t.db")
     with Store(db) as store:
         t = Transcript(
-            "en", 2, [Segment(0, 1, "a", speaker_score=0.6), Segment(1, 2, "b", speaker_score=0.2)]
+            "en",
+            2,
+            [
+                Segment(0, 1, "a", speaker_score=0.6, speaker_match="me"),
+                Segment(1, 2, "b", speaker_score=0.2, speaker_match="me"),
+            ],
         )
         rid = store.save("a.wav", "h", t)  # audio file need not exist: no re-embedding
         store.save_voiceprint(
@@ -117,7 +125,9 @@ def test_cli_relabel_threshold_only(tmp_path, capsys):
     with Store(db) as store:
         assert [s.speaker for s in store.segments(rid)] == ["me", "other"]
     main(["--db", db, "show", str(rid), "--scores"])
-    assert "[me +0.60] a" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "   1  00:00:00  [me +0.60] a" in out
+    assert "[other ~me +0.20] b" in out
 
 
 def test_ecapa_embed_shapes():
@@ -131,3 +141,67 @@ def test_ecapa_embed_shapes():
     emb = speaker_mod.EcapaEmbedder()
     emb._model = FakeClassifier()
     assert emb.embed(np.zeros(SR, np.float32)).shape == (192,)
+
+
+def test_labels_enrolled_people_by_best_match(monkeypatch):
+    audio = np.concatenate([tone(200, 2), tone(800, 2), tone(200, 1) + tone(800, 1)])
+    monkeypatch.setattr(speaker_mod, "load_audio", lambda path: audio)
+    voices = {"me": np.array([1.0, 0.0]), "alice": np.array([0.0, 1.0])}
+    labeler = VoiceprintLabeler(BandEmbedder(), voices, threshold=0.8, min_duration=0.5)
+    t = Transcript("en", 5, [Segment(0, 2, "a"), Segment(2, 4, "b"), Segment(4, 5, "c")])
+    labeler.label("x.wav", t)
+    assert [s.speaker for s in t.segments] == ["me", "alice", "other"]  # mixed: ~0.7 to both
+    assert t.segments[2].speaker_match in ("me", "alice")
+
+
+class FakeEcapa(BandEmbedder):
+    name = "speechbrain/spkrec-ecapa-voxceleb"
+
+    def __init__(self, device="auto"):
+        super().__init__()
+
+
+def test_cli_enroll_from_segments_then_label(tmp_path, monkeypatch, capsys):
+    db = str(tmp_path / "t.db")
+    audio = np.concatenate([tone(200, 2), tone(800, 2), tone(800, 2)])
+    monkeypatch.setattr(speaker_mod, "load_audio", lambda path: audio)
+    monkeypatch.setattr(speaker_mod, "EcapaEmbedder", FakeEcapa)
+    with Store(db) as store:
+        t = Transcript("en", 6, [Segment(0, 2, "a"), Segment(2, 4, "b"), Segment(4, 6, "c")])
+        rid = store.save(tmp_path / "a.wav", "h", t)
+        store.save_voiceprint("me", FakeEcapa.name, np.array([1, 0], np.float32).tobytes())
+
+    main(["--db", db, "enroll", "--name", "alice", "--recording", str(rid), "--segments", "2-3"])
+    main(["--db", db, "relabel", "--rescore", "--threshold", "0.8"])
+    main(["--db", db, "speakers"])
+    assert capsys.readouterr().out.splitlines()[-2:] == ["alice", "me"]
+    with Store(db) as store:
+        assert [s.speaker for s in store.segments(rid)] == ["me", "alice", "alice"]
+
+    main(["--db", db, "speakers", "--forget", "alice"])
+    with Store(db) as store:
+        assert list(store.voiceprints()) == ["me"]
+
+
+def test_v3_scores_are_backfilled_as_me(tmp_path):
+    import sqlite3
+
+    from recorder.store import MIGRATIONS
+
+    db = tmp_path / "v3.db"
+    conn = sqlite3.connect(db)
+    for m in MIGRATIONS[:3]:
+        conn.executescript(m)
+    conn.execute("PRAGMA user_version = 3")
+    conn.execute(
+        "INSERT INTO recordings (path, sha256, duration, language) VALUES ('a', 'h', 1, 'en')"
+    )
+    conn.execute(
+        "INSERT INTO segments (recording_id, start, end, text, speaker, speaker_score) "
+        "VALUES (1, 0, 1, 'x', 'other', 0.1)"
+    )
+    conn.commit()
+    conn.close()
+    with Store(db) as store:
+        (seg,) = store.segments(1)
+        assert (seg.speaker, seg.speaker_match) == ("other", "me")

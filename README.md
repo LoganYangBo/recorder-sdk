@@ -3,7 +3,7 @@
 Transcription pipeline SDK for an all-day wearable recorder (XIAO nRF52840 Sense + microSD, synced over USB).
 For now it runs on any audio file, e.g. phone recordings.
 
-Pipeline: audio file → faster-whisper → speaker label (me / other, by voiceprint) → SQLite.
+Pipeline: audio file → faster-whisper → speaker label (me / enrolled people / other, by voiceprint) → SQLite.
 Files are deduplicated by content hash, so re-running on the same folder is cheap.
 
 ## Install
@@ -48,23 +48,29 @@ so you can tell which recordings are worth re-running after a change.
 The schema is versioned with `PRAGMA user_version` and migrated automatically when a `Store`
 opens a database; existing databases are upgraded in place.
 
-## Me / other
+## Who is speaking
 
-Speaker labels compare each segment with your voiceprint (SpeechBrain ECAPA; the ~80 MB model
-downloads from Hugging Face on first use).
+Each segment is labelled with the enrolled person whose voiceprint it matches best (SpeechBrain
+ECAPA; the ~80 MB model downloads from Hugging Face on first use), or `other` when nobody
+matches well enough. You are `me`.
 
 ```bash
 pip install -e '.[whisper,speaker]'
 recorder enroll my_voice.m4a          # 1-2 min of only you talking; run once
-recorder transcribe ~/recordings/     # labels segments [me] / [other] once enrolled
-recorder show 1 --turns               # merge consecutive segments into speaker turns
-recorder show 1 --scores              # similarity per segment, to pick a threshold
-recorder relabel --threshold 0.4      # re-apply a threshold to stored scores (instant)
-recorder relabel 1 --rescore          # re-embed audio, e.g. after a new enroll
+recorder transcribe ~/recordings/     # labels segments once anyone is enrolled
+recorder show 3 --scores              # numbered segments with best match and similarity
+recorder enroll --name alice --recording 3 --segments 4,7,10-12   # Alice from her segments
+recorder enroll --name bob bob.m4a    # or from a file of only Bob talking
+recorder speakers                     # list enrolled people; --forget NAME to delete
+recorder relabel --rescore            # re-embed all recordings after enrolling someone
+recorder relabel --threshold 0.4      # re-apply a threshold to stored matches (instant)
+recorder show 3 --turns               # merge consecutive segments into speaker turns
 ```
 
-The default threshold is 0.3; check `--scores` on a recording you know and adjust.
-Recordings transcribed before enrolling can be labelled with `recorder relabel --rescore`.
+The default threshold is 0.3; check `--scores` on a recording you know and adjust. In
+`--scores`, `[other ~alice +0.21]` means the best match was Alice but below the threshold.
+Enrolling someone again under the same name replaces their voiceprint, so pass all their
+segments at once; 30 s or more of their speech works best.
 
 ## Python
 
