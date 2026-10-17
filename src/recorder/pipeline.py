@@ -4,6 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from .models import Transcript
 from .speaker import NoopLabeler, SpeakerLabeler
 from .store import Store
 from .sync import AudioSource
@@ -68,3 +69,14 @@ class Pipeline:
 
     def process_source(self, source: AudioSource) -> list[Result]:
         return [self.process_file(f.path, f.started_at) for f in source.list_files()]
+
+    def relabel(self, recording_id: int) -> None:
+        """Re-run speaker labelling on a stored recording without re-transcribing,
+        e.g. after enrolling a new voiceprint. Needs the audio file to still exist.
+        """
+        rec = self.store.recording(recording_id)
+        if rec is None:
+            raise KeyError(f"no recording {recording_id}")
+        segments = self.store.segments(recording_id)
+        self.labeler.label(rec.path, Transcript(rec.language, rec.duration, segments))
+        self.store.set_speakers(recording_id, segments)

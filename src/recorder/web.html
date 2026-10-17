@@ -1,0 +1,916 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recorder</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e4e4df;
+  --accent: #2f6fdb; --accent-soft: #e6eefc; --hover: #f1f1ed; --warn: #b4690e;
+  --danger: #c0392b; --play: #fff6d6;
+  --s0: #2f6fdb; --s1: #0f8a6a; --s2: #a347b8; --s3: #c2570c; --s4: #b8336a; --s5: #5b6ac9;
+  --other: #8a8a84;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --panel: #1f1f1d; --text: #e9e9e4; --muted: #9a9a93; --line: #33332f;
+    --accent: #7aa7ff; --accent-soft: #23314d; --hover: #2a2a27; --warn: #e3a24a;
+    --danger: #ef7563; --play: #3a3420;
+    --s0: #7aa7ff; --s1: #4cc8a3; --s2: #d08ae0; --s3: #f0955a; --s4: #ef7aa6; --s5: #9aa5f5;
+    --other: #8a8a84;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+button, input { font: inherit; color: inherit; }
+button { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px 10px; cursor: pointer; }
+button:hover { background: var(--hover); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { filter: brightness(1.08); }
+button.link { border: none; background: none; color: var(--accent); padding: 0; }
+button.danger { color: var(--danger); }
+button:disabled { opacity: .5; cursor: default; }
+input[type=text], input[type=search] { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 9px; outline: none; }
+input:focus { border-color: var(--accent); }
+
+header { display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+  border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+header input[type=search] { flex: 1; min-width: 0; max-width: 420px; }
+header button { white-space: nowrap; }
+header .spacer { flex: 1; }
+
+.layout { display: grid; grid-template-columns: 260px 1fr; height: calc(100vh - 51px); }
+aside { border-right: 1px solid var(--line); overflow-y: auto; background: var(--panel); }
+aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+  margin: 14px 14px 6px; font-weight: 600; }
+.rec { padding: 8px 14px; cursor: pointer; border-left: 3px solid transparent; }
+.rec:hover { background: var(--hover); }
+.rec.active { background: var(--accent-soft); border-left-color: var(--accent); }
+.rec .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec .meta { color: var(--muted); font-size: 12px; }
+main { overflow-y: auto; }
+.empty { color: var(--muted); padding: 40px; text-align: center; }
+
+.top { position: sticky; top: 0; background: var(--bg); z-index: 3; padding: 14px 20px 8px;
+  border-bottom: 1px solid var(--line); }
+.top h2 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
+.top audio { width: 100%; height: 36px; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 8px;
+  color: var(--muted); font-size: 13px; }
+.toolbar label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.seg-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg-toggle button { border: none; border-radius: 0; padding: 3px 10px; }
+.seg-toggle button.on { background: var(--accent); color: #fff; }
+
+.selbar { display: none; align-items: center; gap: 8px; margin-top: 8px; padding: 8px 10px;
+  background: var(--accent-soft); border-radius: 8px; }
+.selbar.show { display: flex; flex-wrap: wrap; }
+
+.lines { padding: 8px 12px 80px; }
+.line { display: grid; grid-template-columns: 22px 64px 110px 1fr; gap: 8px; padding: 6px 8px;
+  border-radius: 6px; align-items: baseline; }
+.line:hover { background: var(--hover); }
+.line.playing { background: var(--play); }
+.line.flash { outline: 2px solid var(--accent); }
+.line .n { color: var(--muted); font-size: 11px; text-align: right; }
+.line .t { color: var(--accent); cursor: pointer; font-variant-numeric: tabular-nums; font-size: 13px; }
+.line .t:hover { text-decoration: underline; }
+.line input[type=checkbox] { margin: 0; }
+.mode-turns .line { grid-template-columns: 64px 110px 1fr; }
+.chip { display: inline-block; font-size: 12px; font-weight: 600; padding: 0 7px; border-radius: 10px;
+  border: 1px solid currentColor; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 108px; }
+.chip.none { color: var(--muted); border-style: dashed; font-weight: 400; }
+.score { display: block; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.text .w { cursor: pointer; border-radius: 3px; }
+.text .w:hover { background: var(--accent-soft); }
+.show-low .text .w.low { text-decoration: underline dotted var(--warn) 2px; text-underline-offset: 3px; }
+.show-low .text .w.vlow { color: var(--warn); }
+.text .w.fixed { text-decoration: underline solid var(--s1) 2px; text-underline-offset: 3px; }
+.text .w.low, .text .w.fixed { cursor: help; }
+.pop { position: absolute; z-index: 15; width: 340px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.18); padding: 12px 14px; font-size: 13px; }
+.pop .h { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.pop .h b { font-size: 15px; }
+.pop .muted { color: var(--muted); font-size: 12px; }
+.pop .cands { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.pop .cand { display: flex; flex-direction: column; align-items: flex-start; padding: 4px 10px; }
+.pop .cand small { color: var(--muted); font-size: 11px; }
+.pop .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.pop .row input { flex: 1; min-width: 0; }
+.pop .cmp { display: grid; grid-template-columns: 64px 1fr auto; gap: 6px 8px; align-items: center; margin: 6px 0; }
+.ipa { font-family: "Charis SIL", "Doulos SIL", "Segoe UI", serif; font-size: 15px; }
+.ipa .bad { background: color-mix(in srgb, var(--danger) 22%, transparent); color: var(--danger); border-radius: 3px; padding: 0 1px; }
+.ipa .miss { color: var(--danger); text-decoration: line-through; }
+.why { margin-top: 6px; padding: 6px 8px; background: var(--hover); border-radius: 6px; }
+.play { white-space: nowrap; }
+.top a:has(button) { color: inherit; text-decoration: none; }
+.notes { padding: 16px 20px 60px; }
+.note { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.note .words { font-size: 15px; }
+.note .meta { color: var(--muted); font-size: 12px; }
+.note .btns { display: flex; gap: 6px; align-items: center; grid-row: span 2; }
+
+.results .hit { padding: 10px 20px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.results .hit:hover { background: var(--hover); }
+.results .hit .meta { color: var(--muted); font-size: 12px; }
+mark { background: var(--play); color: inherit; padding: 0 1px; }
+
+.drawer { position: fixed; top: 51px; right: 0; bottom: 0; width: 340px; background: var(--panel);
+  border-left: 1px solid var(--line); transform: translateX(100%); transition: transform .15s;
+  z-index: 10; overflow-y: auto; padding: 16px; box-shadow: -4px 0 16px rgba(0,0,0,.06); }
+.drawer.open { transform: none; }
+.drawer h3 { margin: 0 0 10px; font-size: 15px; }
+.drawer section { margin-bottom: 22px; }
+.drawer .spk { display: flex; align-items: center; gap: 8px; padding: 6px 0;
+  border-bottom: 1px solid var(--line); }
+.drawer .spk .count { color: var(--muted); font-size: 12px; flex: 1; }
+.drawer p.hint { color: var(--muted); font-size: 12px; margin: 6px 0; }
+.slider { display: flex; align-items: center; gap: 10px; }
+.slider input { flex: 1; }
+.slider b { font-variant-numeric: tabular-nums; width: 36px; }
+.row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text);
+  color: var(--bg); padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s;
+  pointer-events: none; z-index: 20; max-width: 80vw; }
+.toast.show { opacity: .92; }
+.busy { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: none; align-items: center;
+  justify-content: center; z-index: 30; }
+.busy.show { display: flex; }
+.busy div { background: var(--panel); padding: 16px 22px; border-radius: 10px; }
+
+.jobs { padding: 0 14px 6px; }
+.job { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 3px 0; }
+.job .jn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job .st { color: var(--muted); white-space: nowrap; }
+.job .st.err { color: var(--danger); cursor: help; }
+.job .st.ok { color: var(--s1); }
+.spin { width: 10px; height: 10px; border: 2px solid var(--line); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.drop { position: fixed; inset: 0; background: rgba(47,111,219,.12); border: 3px dashed var(--accent);
+  display: none; align-items: center; justify-content: center; z-index: 40; font-size: 20px;
+  color: var(--accent); font-weight: 600; pointer-events: none; }
+.drop.show { display: flex; }
+.title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.title-row h2 { margin: 0; }
+.title-row .file { color: var(--muted); font-size: 12px; }
+.title-row input { font-size: 16px; font-weight: 600; flex: 1; max-width: 480px; }
+button.rec-btn { color: var(--danger); border-color: var(--danger); white-space: nowrap; }
+button.rec-btn::before { content: "●"; margin-right: 5px; }
+.live { padding: 20px; max-width: 900px; }
+.live-head { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
+.live-head .clock { font-size: 26px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.big { font-size: 15px; padding: 8px 18px; border-radius: 20px; }
+.big.start { background: var(--danger); border-color: var(--danger); color: #fff; }
+.big.stop { border-color: var(--danger); color: var(--danger); }
+.meter { width: 160px; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.meter div { height: 100%; width: 0; background: var(--s1); transition: width .1s; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .2; } }
+.live .partial { color: var(--muted); font-style: italic; padding: 6px 8px; }
+.live .line { grid-template-columns: 64px 110px 1fr; }
+.live .status { color: var(--muted); font-size: 13px; }
+
+@media (max-width: 760px) {
+  .layout { grid-template-columns: 1fr; height: auto; }
+  aside { max-height: 180px; border-right: none; border-bottom: 1px solid var(--line); }
+  .line { grid-template-columns: 22px 58px 1fr; }
+  .line .who { grid-column: 3; }
+  header .spacer { display: none; }
+  .line .text { grid-column: 2 / 4; }
+  .mode-turns .line { grid-template-columns: 58px 1fr; }
+  .mode-turns .line .who { grid-column: 2; }
+  .mode-turns .line .text { grid-column: 1 / 3; }
+  .drawer { width: 100%; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Recorder</h1>
+  <input type="search" id="q" placeholder="搜索全部转写…">
+  <span class="spacer"></span>
+  <button id="importBtn">导入</button>
+  <input type="file" id="fileIn" accept="audio/*,.m4a,.mp3,.wav,.flac,.ogg,.opus,.aac" multiple hidden>
+  <button class="rec-btn" id="liveBtn">实时录音</button>
+  <button id="openNotes">纠错本</button>
+  <button id="openSpk">说话人</button>
+</header>
+
+<div class="layout">
+  <aside>
+    <div id="jobsBox" hidden><h2>后台任务</h2><div class="jobs" id="jobs"></div></div>
+    <h2>录音</h2>
+    <div id="recs"></div>
+  </aside>
+  <main id="main"><div class="empty">在左侧选一条录音</div></main>
+</div>
+
+<div class="drawer" id="drawer">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h3 style="margin:0">说话人</h3><button class="link" id="closeSpk">关闭</button>
+  </div>
+  <section>
+    <div id="spkList"></div>
+    <p class="hint">录入新的人：在转写里勾选他说的几段（合计 30 秒以上最好），在上方填名字后点“录入”。同名再录会覆盖。</p>
+  </section>
+  <section>
+    <h3>阈值</h3>
+    <div class="slider"><input type="range" id="thr" min="0" max="0.8" step="0.01"><b id="thrVal"></b></div>
+    <p class="hint">最像的人分数低于阈值就标为 other。调整后点“应用”，只用已存分数，立刻生效。</p>
+    <div class="row">
+      <button class="primary" id="applyThr">应用到全部录音</button>
+      <button id="rescore">重新计算全部</button>
+    </div>
+    <p class="hint">录入或删除某人后，用“重新计算全部”重新比对音频（较慢）。</p>
+  </section>
+</div>
+
+<div class="drop" id="drop">松开即可导入并转写</div>
+<div class="toast" id="toast"></div>
+<div class="busy" id="busy"><div id="busyText">处理中…</div></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const state = {
+  recs: [], rec: null, segs: [], speakers: [], selected: new Set(),
+  mode: localGet("mode", "segments"), scores: localGet("scores", "0") === "1",
+  low: localGet("low", "1") === "1", threshold: parseFloat(localGet("threshold", "0.3")),
+};
+
+function localGet(k, d) { try { return localStorage.getItem("rec." + k) ?? d; } catch { return d; } }
+function localSet(k, v) { try { localStorage.setItem("rec." + k, v); } catch {} }
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    method: opts.method || "GET",
+    headers: opts.body ? { "Content-Type": "application/json" } : {},
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 2600);
+}
+async function busy(text, fn) {
+  $("#busyText").textContent = text; $("#busy").classList.add("show");
+  try { return await fn(); } catch (e) { toast("出错：" + e.message); } finally { $("#busy").classList.remove("show"); }
+}
+
+const fmt = t => {
+  t = Math.floor(t); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0");
+};
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function speakerColor(name) {
+  if (!name || name === "other") return "var(--other)";
+  if (name === "me") return "var(--s0)";
+  let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return `var(--s${1 + (h % 5)})`;
+}
+function chip(name) {
+  if (!name) return `<span class="chip none">未标注</span>`;
+  return `<span class="chip" style="color:${speakerColor(name)}" title="${esc(name)}">${esc(name)}</span>`;
+}
+
+// ---------- recordings ----------
+async function loadRecs() {
+  state.recs = await api("/api/recordings");
+  $("#recs").innerHTML = state.recs.length ? state.recs.map(r => `
+    <div class="rec ${state.rec?.id === r.id ? "active" : ""}" data-id="${r.id}">
+      <div class="name" title="${esc(r.path)}">${esc(r.name)}</div>
+      <div class="meta">#${r.id} · ${fmt(r.duration)} · ${r.segments} 段 · ${esc(r.model || "?")}</div>
+    </div>`).join("") : `<div class="empty">还没有录音。先运行<br><code>recorder transcribe 文件</code></div>`;
+}
+$("#recs").addEventListener("click", e => {
+  const el = e.target.closest(".rec"); if (el) { stopLiveView(); openRec(+el.dataset.id); }
+});
+
+async function openRec(id, focusStart) {
+  state.rec = state.recs.find(r => r.id === id);
+  state.selected.clear();
+  state.segs = await api(`/api/recordings/${id}/segments`);
+  document.querySelectorAll(".rec").forEach(el => el.classList.toggle("active", +el.dataset.id === id));
+  renderRec();
+  if (focusStart != null) seek(focusStart, true);
+}
+
+function renderRec() {
+  const r = state.rec;
+  $("#main").innerHTML = `
+    <div class="top">
+      <div class="title-row" id="titleRow">
+        <h2>${esc(r.name)}</h2>
+        ${r.title ? `<span class="file">${esc(r.file)}</span>` : ""}
+        <button class="link" id="renameBtn">改名</button>
+        <button class="link danger" id="deleteBtn">删除</button>
+      </div>
+      <audio id="audio" controls preload="metadata" src="/api/recordings/${r.id}/audio"></audio>
+      <div class="toolbar">
+        <span class="seg-toggle">
+          <button data-mode="segments" class="${state.mode === "segments" ? "on" : ""}">逐段</button>
+          <button data-mode="turns" class="${state.mode === "turns" ? "on" : ""}">按轮次</button>
+        </span>
+        <label><input type="checkbox" id="optScores" ${state.scores ? "checked" : ""}> 显示分数</label>
+        <label><input type="checkbox" id="optLow" ${state.low ? "checked" : ""}> 标出没把握的词</label>
+        <span id="counts"></span>
+      </div>
+      <div class="selbar" id="selbar">
+        <span id="selInfo"></span>
+        <input type="text" id="enrollName" list="spkNames" placeholder="这个人的名字" style="width:140px">
+        <datalist id="spkNames">${state.speakers.map(s => `<option value="${esc(s.name)}">`).join("")}</datalist>
+        <button class="primary" id="enrollBtn">录入声纹</button>
+        <button class="link" id="clearSel">取消选择</button>
+      </div>
+    </div>
+    <div class="lines" id="lines"></div>`;
+  $(".seg-toggle").addEventListener("click", e => {
+    const m = e.target.dataset.mode; if (!m) return;
+    state.mode = m; localSet("mode", m); state.selected.clear(); renderRec();
+  });
+  $("#optScores").onchange = e => { state.scores = e.target.checked; localSet("scores", state.scores ? "1" : "0"); renderLines(); };
+  $("#optLow").onchange = e => { state.low = e.target.checked; localSet("low", state.low ? "1" : "0"); renderLines(); };
+  $("#enrollBtn").onclick = enrollSelected;
+  $("#renameBtn").onclick = startRename;
+  $("#deleteBtn").onclick = deleteRec;
+  $("#clearSel").onclick = () => { state.selected.clear(); renderLines(); };
+  $("#audio").addEventListener("timeupdate", highlightPlaying);
+  renderLines();
+}
+
+function turns(segs, maxGap = 1.5) {
+  const out = [];
+  for (const s of segs) {
+    const last = out[out.length - 1];
+    if (last && last.speaker === s.speaker && s.start - last.end <= maxGap) {
+      last.end = Math.max(last.end, s.end); last.segs.push(s);
+    } else out.push({ start: s.start, end: s.end, speaker: s.speaker, segs: [s] });
+  }
+  return out;
+}
+
+const norm = w => String(w).toLowerCase().replace(/^[^\w']+|[^\w']+$/g, "");
+function wordsHtml(seg) {
+  if (!seg.words.length) return esc(seg.text);
+  return seg.words.map(([w, st, , p, id, orig]) => {
+    let cls = p < 0.3 ? "w low vlow" : p < 0.6 ? "w low" : "w", title = `${Math.round(p * 100)}%，点击查看候选`;
+    if (orig != null) {
+      const changed = norm(orig) !== norm(w);
+      cls = changed ? "w fixed" : "w";
+      title = changed ? `原来听成 “${orig}”，点击对比发音` : "已确认";
+    }
+    if (id == null) cls = cls.replace(/ ?(low|fixed)/g, "");
+    return `<span class="${cls}" data-t="${st}" ${id != null ? `data-wid="${id}"` : ""} title="${esc(title)}">${esc(w)}</span>`;
+  }).join(" ");
+}
+
+function renderLines() {
+  const lines = $("#lines");
+  lines.parentElement.classList.toggle("show-low", state.low);
+  const counts = {};
+  state.segs.forEach(s => { counts[s.speaker || "未标注"] = (counts[s.speaker || "未标注"] || 0) + 1; });
+  $("#counts").textContent = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(" · ");
+  if (!state.segs.length) { lines.innerHTML = `<div class="empty">这条录音没有转写内容</div>`; return; }
+  const isTurns = state.mode === "turns";
+  $("main").classList.toggle("mode-turns", isTurns);
+  if (isTurns) {
+    lines.innerHTML = turns(state.segs).map(t => `
+      <div class="line" data-start="${t.start}" data-end="${t.end}">
+        <span class="t" data-t="${t.start}">${fmt(t.start)}</span>
+        <span class="who">${chip(t.speaker)}</span>
+        <span class="text">${t.segs.map(wordsHtml).join(" ")}</span>
+      </div>`).join("");
+  } else {
+    lines.innerHTML = state.segs.map(s => {
+      const score = state.scores && s.score != null
+        ? `<span class="score">${s.match !== s.speaker ? "~" + esc(s.match) + " " : ""}${s.score.toFixed(2)}</span>` : "";
+      return `
+      <div class="line" data-start="${s.start}" data-end="${s.end}" data-n="${s.n}">
+        <input type="checkbox" data-n="${s.n}" ${state.selected.has(s.n) ? "checked" : ""}>
+        <span class="t" data-t="${s.start}">${fmt(s.start)}<span class="n"> #${s.n}</span></span>
+        <span class="who">${chip(s.speaker)}${score}</span>
+        <span class="text">${wordsHtml(s)}</span>
+      </div>`;
+    }).join("");
+  }
+  updateSelbar();
+}
+
+$("#main").addEventListener("click", e => {
+  const w = e.target.closest(".w.low[data-wid], .w.fixed[data-wid]");
+  if (w) { openWordPop(w); return; }
+  const t = e.target.closest("[data-t]");
+  if (t && !e.target.matches("input")) seek(parseFloat(t.dataset.t));
+});
+$("#main").addEventListener("change", e => {
+  if (!e.target.matches(".line input[type=checkbox]")) return;
+  const n = +e.target.dataset.n;
+  e.target.checked ? state.selected.add(n) : state.selected.delete(n);
+  updateSelbar();
+});
+
+function updateSelbar() {
+  const bar = $("#selbar"); if (!bar) return;
+  const segs = state.segs.filter(s => state.selected.has(s.n));
+  const secs = segs.reduce((a, s) => a + (s.end - s.start), 0);
+  bar.classList.toggle("show", segs.length > 0);
+  $("#selInfo").textContent = `已选 ${segs.length} 段，共 ${Math.round(secs)} 秒`;
+}
+
+function seek(t, play = true) {
+  const a = $("#audio"); if (!a) return;
+  a.currentTime = t; if (play) a.play().catch(() => {});
+}
+function highlightPlaying() {
+  const t = $("#audio").currentTime;
+  let cur = null;
+  document.querySelectorAll(".line").forEach(el => {
+    const on = t >= +el.dataset.start && t < +el.dataset.end;
+    el.classList.toggle("playing", on); if (on) cur = el;
+  });
+  if (cur && cur !== highlightPlaying.last) {
+    const r = cur.getBoundingClientRect();
+    if (r.top < 160 || r.bottom > innerHeight) cur.scrollIntoView({ block: "center", behavior: "smooth" });
+    highlightPlaying.last = cur;
+  }
+}
+
+async function enrollSelected() {
+  const name = $("#enrollName").value.trim();
+  if (!name) { toast("先填名字"); return; }
+  const exists = state.speakers.some(s => s.name === name);
+  if (exists && !confirm(`已有“${name}”的声纹，用选中的段覆盖它？`)) return;
+  await busy(`正在录入 ${name} 的声纹并重新标注这条录音…（第一次会加载模型）`, async () => {
+    const r = await api("/api/speakers/enroll", { method: "POST",
+      body: { name, recording: state.rec.id, segments: [...state.selected], threshold: state.threshold } });
+    await loadSpeakers();
+    await openRec(state.rec.id);
+    toast(r.labelled
+      ? `已录入 ${name}，这条录音里有 ${r.labelled} 段标成了 ${name}。其他录音点“说话人 → 重新计算全部”`
+      : `已录入 ${name}，但这条录音没有一段超过阈值。勾上“显示分数”看看，可能要调低阈值`);
+  });
+}
+
+// ---------- speakers ----------
+async function loadSpeakers() {
+  state.speakers = await api("/api/speakers");
+  $("#spkList").innerHTML = state.speakers.length ? state.speakers.map(s => `
+    <div class="spk">${chip(s.name)}<span class="count">${s.segments} 段</span>
+      <button class="link danger" data-forget="${esc(s.name)}">删除</button></div>`).join("")
+    : `<p class="hint">还没有声纹。先运行 <code>recorder enroll my_voice.m4a</code> 录入你自己（me）。</p>`;
+}
+$("#spkList").addEventListener("click", async e => {
+  const name = e.target.dataset.forget; if (!name) return;
+  if (!confirm(`删除“${name}”的声纹？已打的标签要“重新计算全部”后才会更新。`)) return;
+  await busy("删除中…", async () => {
+    await api(`/api/speakers/${encodeURIComponent(name)}`, { method: "DELETE" });
+    await loadSpeakers(); toast(`已删除 ${name}`);
+  });
+});
+$("#openSpk").onclick = () => $("#drawer").classList.toggle("open");
+$("#closeSpk").onclick = () => $("#drawer").classList.remove("open");
+
+const thr = $("#thr");
+thr.value = state.threshold; $("#thrVal").textContent = state.threshold.toFixed(2);
+thr.oninput = () => { $("#thrVal").textContent = (+thr.value).toFixed(2); };
+async function relabel(rescore) {
+  state.threshold = +thr.value; localSet("threshold", thr.value);
+  await busy(rescore ? "正在重新比对全部录音的音频…" : "应用阈值…", async () => {
+    const r = await api("/api/relabel", { method: "POST", body: { threshold: state.threshold, rescore } });
+    await loadSpeakers(); await loadRecs();
+    if (state.rec) await openRec(state.rec.id);
+    toast(`已更新 ${r.recordings} 条录音`);
+  });
+}
+$("#applyThr").onclick = () => relabel(false);
+$("#rescore").onclick = () => relabel(true);
+
+// ---------- search ----------
+let searchTimer;
+$("#q").addEventListener("input", e => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  searchTimer = setTimeout(() => q ? search(q) : (state.rec ? renderRec() : ($("#main").innerHTML = `<div class="empty">在左侧选一条录音</div>`)), 250);
+});
+async function search(q) {
+  const hits = await api("/api/search?q=" + encodeURIComponent(q));
+  const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+  $("#main").innerHTML = `<div class="results">
+    <div class="top"><h2>“${esc(q)}” 共 ${hits.length} 条${hits.length === 100 ? "（只显示前 100）" : ""}</h2></div>
+    ${hits.map(h => `<div class="hit" data-rec="${h.recording}" data-start="${h.start}">
+      <div>${chip(h.speaker)} ${esc(h.text).replace(re, m => `<mark>${m}</mark>`)}</div>
+      <div class="meta">${esc(h.name)} · ${fmt(h.start)}</div></div>`).join("")}
+  </div>`;
+}
+$("#main").addEventListener("click", e => {
+  const h = e.target.closest(".hit"); if (!h) return;
+  $("#q").value = "";
+  openRec(+h.dataset.rec, +h.dataset.start);
+});
+
+
+// ---------- rename ----------
+function startRename() {
+  const r = state.rec, row = $("#titleRow");
+  row.innerHTML = `<input type="text" id="titleIn" value="${esc(r.title || r.name)}" placeholder="${esc(r.file)}">
+    <button class="primary" id="titleSave">保存</button><button class="link" id="titleCancel">取消</button>`;
+  const inp = $("#titleIn"); inp.focus(); inp.select();
+  const save = async () => {
+    const title = inp.value.trim() === r.file ? "" : inp.value.trim();
+    try {
+      await api(`/api/recordings/${r.id}/rename`, { method: "POST", body: { title } });
+      await loadRecs(); state.rec = state.recs.find(x => x.id === r.id); renderRec();
+      toast(title ? "已改名" : "已恢复为文件名");
+    } catch (e) { toast("出错：" + e.message); }
+  };
+  $("#titleSave").onclick = save;
+  $("#titleCancel").onclick = renderRec;
+  inp.onkeydown = e => { if (e.key === "Enter") save(); if (e.key === "Escape") renderRec(); };
+}
+
+// ---------- delete ----------
+async function deleteRec() {
+  const r = state.rec;
+  if (!confirm(`删除“${r.name}”？转写和说话人标签会一起删除，无法恢复。\n` +
+      `如果音频是导入或实时录的（在 recordings 文件夹里），音频文件也会删除；其他位置的原文件保留。`)) return;
+  await busy("删除中…", async () => {
+    const res = await api(`/api/recordings/${r.id}`, { method: "DELETE" });
+    state.rec = null;
+    await loadRecs(); await loadSpeakers();
+    if (state.recs.length) openRec(state.recs[state.recs.length - 1].id);
+    else $("#main").innerHTML = `<div class="empty">还没有录音</div>`;
+    toast(res.deleted_file ? `已删除“${r.name}”和它的音频文件` : `已删除“${r.name}”，原音频文件保留在 ${res.path}`);
+  });
+}
+
+// ---------- import ----------
+$("#importBtn").onclick = () => $("#fileIn").click();
+$("#fileIn").onchange = e => { uploadFiles([...e.target.files]); e.target.value = ""; };
+let dragDepth = 0;
+addEventListener("dragenter", e => { if (e.dataTransfer.types.includes("Files")) { dragDepth++; $("#drop").classList.add("show"); } });
+addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("#drop").classList.remove("show"); } });
+addEventListener("dragover", e => e.preventDefault());
+addEventListener("drop", e => {
+  e.preventDefault(); dragDepth = 0; $("#drop").classList.remove("show");
+  uploadFiles([...e.dataTransfer.files]);
+});
+
+const uploading = [];
+async function uploadFiles(files) {
+  for (const f of files) {
+    const u = { name: f.name, status: "uploading" }; uploading.push(u); renderJobs();
+    try {
+      const res = await fetch(`/api/import?name=${encodeURIComponent(f.name)}&threshold=${state.threshold}`,
+        { method: "POST", body: f, headers: { "Content-Type": "application/octet-stream" } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+    } catch (e) { toast(`${f.name}：${e.message}`); }
+    uploading.splice(uploading.indexOf(u), 1);
+    pollJobs();
+  }
+}
+
+// Finished imports leave the list a few seconds after they finish; errors stay
+// until dismissed. Jobs already finished when the page loads are not shown.
+let jobsTimer, firstPoll = true;
+const seenDone = new Set(), hidden = new Set();
+async function pollJobs() {
+  clearTimeout(jobsTimer);
+  const jobs = await api("/api/jobs").catch(() => []);
+  let changed = false;
+  for (const j of jobs) {
+    const finished = j.status === "done" || j.status === "duplicate";
+    if (firstPoll && (finished || j.status === "error")) { hidden.add(j.id); seenDone.add(j.id); continue; }
+    if (finished && !seenDone.has(j.id)) {
+      seenDone.add(j.id); changed = true;
+      if (j.status === "duplicate") toast(`${j.name} 之前已经导入过`);
+      setTimeout(() => { hidden.add(j.id); renderJobs(); }, 4000);
+    }
+  }
+  firstPoll = false;
+  renderJobs(jobs);
+  if (changed) await loadRecs();
+  if (jobs.some(j => ["queued", "running"].includes(j.status)) || uploading.length)
+    jobsTimer = setTimeout(pollJobs, 2000);
+}
+function jobLabel(j, label) {
+  if (j.kind !== "suggest") return label[j.status];
+  if (j.status === "running") return j.progress ? `分析难词 ${j.progress[0]}/${j.progress[1]}` : "分析难词";
+  return j.status === "done" ? "难词已分析" : label[j.status];
+}
+function renderJobs(jobs = renderJobs.last || []) {
+  renderJobs.last = jobs;
+  const label = { queued: "排队中", running: "转写中", done: "完成", duplicate: "已存在", error: "出错" };
+  const rows = [
+    ...uploading.map(u => `<div class="job"><span class="spin"></span><span class="jn">${esc(u.name)}</span><span class="st">上传中</span></div>`),
+    ...jobs.filter(j => !hidden.has(j.id)).map(j => `<div class="job" ${j.recording ? `data-open="${j.recording}" style="cursor:pointer"` : ""}>
+      ${["queued", "running"].includes(j.status) ? `<span class="spin"></span>` : ""}
+      <span class="jn">${esc(j.name)}</span>
+      <span class="st ${j.status === "error" ? "err" : j.status === "done" ? "ok" : ""}" title="${esc(j.error || "")}">${jobLabel(j, label)}</span>
+      ${j.status === "error" ? `<button class="link" data-dismiss="${j.id}" title="关闭">✕</button>` : ""}</div>`),
+  ];
+  $("#jobsBox").hidden = !rows.length;
+  $("#jobs").innerHTML = rows.join("");
+}
+$("#jobs").addEventListener("click", e => {
+  const d = e.target.closest("[data-dismiss]");
+  if (d) { hidden.add(+d.dataset.dismiss); renderJobs(); return; }
+  const el = e.target.closest("[data-open]"); if (el) { stopLiveView(); openRec(+el.dataset.open); }
+});
+
+
+// ---------- unsure words: candidates, correction, pronunciation ----------
+let pop = null;
+function closePop() { pop?.remove(); pop = null; }
+addEventListener("keydown", e => { if (e.key === "Escape") closePop(); });
+addEventListener("mousedown", e => { if (pop && !pop.contains(e.target) && !e.target.closest(".w")) closePop(); });
+
+function placePop(el) {
+  const r = el.getBoundingClientRect();
+  const left = Math.min(Math.max(8, r.left + scrollX - 20), document.documentElement.clientWidth - 356 + scrollX);
+  pop.style.left = left + "px";
+  pop.style.top = r.bottom + scrollY + 6 + "px";
+  const pr = pop.getBoundingClientRect();
+  if (pr.bottom > innerHeight - 8) pop.style.top = r.top + scrollY - pr.height - 6 + "px";
+}
+
+async function openWordPop(el, repick = false) {
+  closePop();
+  const wid = +el.dataset.wid;
+  pop = document.createElement("div"); pop.className = "pop";
+  pop.innerHTML = `<div class="muted">正在找可能的词…（第一次会加载模型）</div>`;
+  document.body.appendChild(pop); placePop(el);
+  let info;
+  try { info = await api(`/api/words/${wid}/candidates`); }
+  catch (e) { pop.innerHTML = `<div class="muted">出错：${esc(e.message)}</div>`; return; }
+  if (!pop) return;
+  const clip = { wid };
+  if (!repick && info.corrected && norm(info.word) !== info.heard) {
+    showCompare(el, { chosen: norm(info.word), heard: info.heard, compare: await api(`/api/compare?target=${encodeURIComponent(norm(info.word))}&heard=${encodeURIComponent(info.heard)}`) }, clip);
+    return;
+  }
+  pop.innerHTML = `
+    <div class="h"><span>听到 <b>${esc(info.heard)}</b> ${info.heard_ipa ? `<span class="ipa">/${esc(info.heard_ipa)}/</span>` : ""}</span>
+      <span class="muted">把握 ${Math.round(info.probability * 100)}%</span></div>
+    <div class="row" style="margin-top:0"><button class="play" data-clip>▶ 录音原声</button>
+      <button class="play" data-say="${esc(info.heard)}">▶ ${esc(info.heard)} 的标准发音</button></div>
+    <div class="muted" style="margin-top:10px">实际说的是哪个？</div>
+    <div class="cands">${info.candidates.length ? info.candidates.map(c =>
+      `<button class="cand" data-pick="${esc(c.word)}"><span>${esc(c.word)}</span>${c.ipa ? `<small class="ipa">/${esc(c.ipa)}/</small>` : ""}</button>`).join("")
+      : `<span class="muted">没有找到相近的词</span>`}</div>
+    <div class="row"><input type="text" id="popOther" placeholder="都不是？输入正确的词">
+      <button data-pick-other>确定</button></div>
+    <div class="row"><button class="link" data-pick="${esc(info.heard)}">识别没错，就是 ${esc(info.heard)}</button></div>`;
+  placePop(el);
+  bindPlay(clip);
+  pop.querySelectorAll("[data-pick]").forEach(b => b.onclick = () => choose(el, wid, b.dataset.pick, clip));
+  const other = () => { const v = $("#popOther").value.trim(); if (v) choose(el, wid, v, clip); };
+  pop.querySelector("[data-pick-other]").onclick = other;
+  $("#popOther").onkeydown = e => { if (e.key === "Enter") other(); };
+}
+
+async function choose(el, wid, word, clip) {
+  let c;
+  try { c = await api(`/api/words/${wid}/correct`, { method: "POST", body: { word } }); }
+  catch (e) { toast("出错：" + e.message); return; }
+  // update the transcript in place
+  for (const s of state.segs) {
+    const w = s.words.find(w => w[4] === wid);
+    if (w) { w[0] = c.word; w[5] = c.heard; s.text = c.sentence; }
+  }
+  renderLines();
+  const fresh = document.querySelector(`.w[data-wid="${wid}"]`) || el;
+  if (c.heard === c.chosen) { closePop(); toast(`已确认 “${c.chosen}”`); return; }
+  showCompare(fresh, c, clip);
+  toast(`已改为 “${c.chosen}”，并记入纠错本`);
+}
+
+function ipaDiff(cmp) {
+  // target IPA with wrongly said / missing sounds marked, and the heard IPA with the substitutes
+  if (!cmp.target_ipa || !cmp.heard_ipa) return null;
+  let t = "", h = "", why = [];
+  for (const o of cmp.ops) {
+    if (o.op === "same") { t += esc(o.target); h += esc(o.heard); }
+    else if (o.op === "sub") { t += `<span class="bad">${esc(o.target)}</span>`; h += `<span class="bad">${esc(o.heard)}</span>`; why.push(`/${o.target}/ 发成了 /${o.heard}/`); }
+    else if (o.op === "del") { t += `<span class="bad">${esc(o.target)}</span>`; why.push(`漏了 /${o.target}/`); }
+    else { h += `<span class="bad">${esc(o.heard)}</span>`; why.push(`多了 /${o.heard}/`); }
+  }
+  // a word that shares little sound with the intended one was misheard, not mispronounced
+  const same = cmp.ops.filter(o => o.op === "same").length;
+  if (why.length > 2 && same < why.length) why = ["两个词发音差别很大，更可能是识别错了，不太像发音问题"];
+  return { t, h, why };
+}
+
+function compareHtml(c) {
+  const d = ipaDiff(c.compare);
+  return `
+    <div class="cmp">
+      <span class="muted">应该是</span><span><b>${esc(c.chosen)}</b> ${d ? `<span class="ipa">/${d.t}/</span>` : ""}</span>
+      <button class="play" data-say="${esc(c.chosen)}">▶ 标准发音</button>
+      <span class="muted">听起来像</span><span><b>${esc(c.heard)}</b> ${d ? `<span class="ipa">/${d.h}/</span>` : ""}</span>
+      <button class="play" data-clip>▶ 录音原声</button>
+    </div>
+    <div class="why">${d ? (d.why.length ? d.why.join("；") : "音素一样，可能是重音或语速的问题")
+      : "词典里没有这个词的音标，听听两段发音对比一下"}</div>`;
+}
+
+function showCompare(el, c, clip) {
+  if (!pop) { pop = document.createElement("div"); pop.className = "pop"; document.body.appendChild(pop); }
+  pop.innerHTML = `<div class="h"><b>发音对比</b><button class="link" id="popClose">关闭</button></div>${compareHtml(c)}
+    <div class="row"><button class="link" id="popRedo">改选别的词</button></div>`;
+  placePop(el);
+  bindPlay(clip);
+  $("#popClose").onclick = closePop;
+  $("#popRedo").onclick = () => openWordPop(el, true);
+}
+
+function bindPlay(clip, root = pop) {
+  root.querySelectorAll("[data-say]").forEach(b => b.onclick = () => sayWord(b.dataset.say));
+  root.querySelectorAll("[data-clip]").forEach(b => b.onclick = () => playWord(clip.wid));
+}
+
+// the word's own audio, cut on the server at its (aligned) times: exact, unlike
+// seeking the compressed recording and stopping it on a timer
+const wordAudio = new Audio();
+async function playWord(wid) {
+  $("#audio")?.pause();
+  wordAudio.src = `/api/words/${wid}/clip.wav?v=${Date.now()}`;  // times can change after alignment
+  try { await wordAudio.play(); } catch { toast("这段原声放不了（录音文件可能不在了）"); }
+}
+
+const sayAudio = new Audio();
+async function sayWord(word) {
+  word = norm(word);
+  sayAudio.src = `/api/pronounce?word=${encodeURIComponent(word)}`;
+  try { await sayAudio.play(); return; } catch {}
+  // no dictionary recording (or offline): fall back to the system voice
+  if (!("speechSynthesis" in window)) { toast("没有找到这个词的标准发音"); return; }
+  const u = new SpeechSynthesisUtterance(word);
+  u.lang = "en-US"; u.rate = 0.85;
+  const v = speechSynthesis.getVoices().find(v => v.lang === "en-US");
+  if (v) u.voice = v;
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+  toast("词典里没有真人录音，用系统语音朗读");
+}
+
+// ---------- correction notebook ----------
+$("#openNotes").onclick = showNotes;
+async function showNotes() {
+  closePop(); stopLiveView();
+  state.rec = null;
+  document.querySelectorAll(".rec").forEach(el => el.classList.remove("active"));
+  const rows = await api("/api/corrections");
+  $("#main").innerHTML = `<div class="top"><div class="title-row"><h2>纠错本</h2>
+      <span class="muted" style="color:var(--muted)">${rows.length} 条</span><span style="flex:1"></span>
+      <a href="/api/corrections.md" download="corrections.md"><button>导出 Markdown</button></a></div></div>
+    <div class="notes">${rows.length ? rows.map(c => {
+      const d = ipaDiff(c.compare);
+      return `<div class="note">
+        <div class="words"><b>${esc(c.chosen)}</b> ${d ? `<span class="ipa">/${d.t}/</span>` : ""}
+          <span class="muted">听成</span> ${esc(c.heard)} ${d ? `<span class="ipa">/${d.h}/</span>` : ""}
+          ${d && d.why.length ? `<span class="muted">· ${esc(d.why.join("；"))}</span>` : ""}</div>
+        <div class="btns">
+          <button class="play" data-say="${esc(c.chosen)}">▶ 标准</button>
+          ${c.recording_id ? `<button class="play" data-word="${c.word_id}">▶ 原声</button>
+          <button class="link" data-goto="${c.recording_id}" data-t="${c.start}">去原文</button>` : ""}
+        </div>
+        <div class="meta">${esc(c.sentence)} · ${esc(c.recording || "（录音已删除）")} ${fmt(c.start)} · ${esc(c.speaker || "")} · ${esc(c.created_at)}</div>
+      </div>`;
+    }).join("") : `<div class="empty">还没有纠错记录。在转写里点橙色下划线的词，选出正确的词就会记到这里。</div>`}</div>`;
+  $("#main").querySelectorAll("[data-say]").forEach(b => b.onclick = () => sayWord(b.dataset.say));
+  $("#main").querySelectorAll("[data-word]").forEach(b => b.onclick = () => playWord(+b.dataset.word));
+  $("#main").querySelectorAll("[data-goto]").forEach(b => b.onclick = e => { e.stopPropagation(); openRec(+b.dataset.goto, +b.dataset.t); });
+}
+
+// ---------- live recording ----------
+const live = { on: false, id: null, ctx: null, stream: null, node: null, buf: [], inflight: false,
+  timer: null, t0: 0, segs: [], partial: "", rate: 48000 };
+
+$("#liveBtn").onclick = showLive;
+function showLive() {
+  state.rec = null;
+  document.querySelectorAll(".rec").forEach(el => el.classList.remove("active"));
+  $("main").classList.remove("mode-turns");
+  $("#main").innerHTML = `<div class="live">
+    <div class="live-head">
+      <button class="big start" id="liveToggle">开始录音</button>
+      <span class="clock" id="liveClock">0:00</span>
+      <div class="meter"><div id="liveLevel"></div></div>
+      <span class="status" id="liveStatus">用麦克风录音，边录边转写并识别说话人。停止后自动保存为一条录音。</span>
+    </div>
+    <div class="lines" id="liveLines"></div>
+    <div class="partial" id="livePartial"></div>
+  </div>`;
+  $("#liveToggle").onclick = () => live.on ? stopLive() : startLive();
+  renderLive();
+}
+function stopLiveView() { if (live.on) stopLive(); }
+
+function renderLive() {
+  const lines = $("#liveLines"); if (!lines) return;
+  lines.innerHTML = live.segs.map(s => `<div class="line">
+      <span class="t">${fmt(s.start)}</span><span class="who">${chip(s.speaker)}</span>
+      <span class="text">${wordsHtml(s)}</span></div>`).join("");
+  $("#livePartial").textContent = live.partial ? live.partial + " …" : "";
+  lines.parentElement.classList.toggle("show-low", state.low);
+}
+
+const WORKLET = `class Cap extends AudioWorkletProcessor {
+  process(inputs) { const c = inputs[0] && inputs[0][0]; if (c) this.port.postMessage(c.slice(0)); return true; }
+} registerProcessor("cap", Cap);`;
+
+async function startLive() {
+  try {
+    live.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: true } });
+  } catch (e) { toast("拿不到麦克风：" + e.message); return; }
+  try {
+    live.id = (await api("/api/live/start", { method: "POST", body: { threshold: state.threshold } })).id;
+  } catch (e) { live.stream.getTracks().forEach(t => t.stop()); toast("出错：" + e.message); return; }
+  live.ctx = new AudioContext();
+  live.rate = live.ctx.sampleRate;
+  await live.ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })));
+  const src = live.ctx.createMediaStreamSource(live.stream);
+  live.node = new AudioWorkletNode(live.ctx, "cap");
+  live.node.port.onmessage = e => {
+    live.buf.push(e.data);
+    let sum = 0; for (const v of e.data) sum += v * v;
+    const lvl = $("#liveLevel"); if (lvl) lvl.style.width = Math.min(100, Math.sqrt(sum / e.data.length) * 400) + "%";
+  };
+  src.connect(live.node);
+  Object.assign(live, { on: true, segs: [], partial: "", t0: Date.now() });
+  $("#liveToggle").textContent = "停止"; $("#liveToggle").className = "big stop";
+  $("#liveStatus").innerHTML = `<span class="dot" style="display:inline-block"></span> 正在录音`;
+  $("#liveBtn").disabled = true;
+  live.timer = setInterval(() => {
+    const c = $("#liveClock"); if (c) c.textContent = fmt((Date.now() - live.t0) / 1000);
+    sendLive();
+  }, 1000);
+  renderLive();
+}
+
+function takeSamples() {
+  // concatenate captured chunks and resample to 16 kHz (linear interpolation)
+  const n = live.buf.reduce((a, b) => a + b.length, 0);
+  const all = new Float32Array(n); let o = 0;
+  for (const b of live.buf) { all.set(b, o); o += b.length; }
+  live.buf = [];
+  if (live.rate === 16000) return all;
+  const ratio = live.rate / 16000, out = new Float32Array(Math.floor(n / ratio));
+  for (let i = 0; i < out.length; i++) {
+    const x = i * ratio, j = Math.floor(x), f = x - j;
+    out[i] = all[j] * (1 - f) + (all[j + 1] ?? all[j]) * f;
+  }
+  return out;
+}
+
+async function sendLive() {
+  if (live.inflight || !live.buf.length || live.id == null) return;
+  live.inflight = true;
+  try {
+    const res = await fetch(`/api/live/${live.id}/audio`, { method: "POST", body: takeSamples(),
+      headers: { "Content-Type": "application/octet-stream" } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    live.segs.push(...data.committed); live.partial = data.partial;
+    renderLive();
+    const p = $("#livePartial"); if (p) p.scrollIntoView({ block: "nearest" });
+  } catch (e) { toast("转写出错：" + e.message); }
+  live.inflight = false;
+}
+
+async function stopLive() {
+  clearInterval(live.timer);
+  live.on = false;
+  live.node?.disconnect(); live.stream?.getTracks().forEach(t => t.stop()); await live.ctx?.close();
+  $("#liveBtn").disabled = false;
+  const btn = $("#liveToggle");
+  if (btn) { btn.textContent = "开始录音"; btn.className = "big start"; }
+  await busy("正在转写最后一段并保存…", async () => {
+    while (live.inflight) await new Promise(r => setTimeout(r, 100));
+    await sendLive();
+    const r = await api(`/api/live/${live.id}/stop`, { method: "POST", body: {} });
+    live.id = null;
+    if (r.recording) { await loadRecs(); openRec(r.recording); pollJobs(); toast("已保存为一条录音，可以点“改名”起个名字"); }
+    else { live.segs.push(...r.committed); renderLive(); toast("录音太短，没有保存"); }
+  });
+}
+
+(async () => {
+  try { await Promise.all([loadRecs(), loadSpeakers()]); pollJobs(); }
+  catch (e) { toast("连不上本地服务：" + e.message); return; }
+  if (state.recs.length) openRec(state.recs[state.recs.length - 1].id);
+})();
+</script>
+</body>
+</html>

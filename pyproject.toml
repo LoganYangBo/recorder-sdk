@@ -15,13 +15,21 @@ dependencies = []
 whisper = ["faster-whisper>=1.1", "av>=11,<19"]
 # CUDA runtime libs for the GPU, if not installed system-wide (needed on Windows)
 cuda = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9,<10"]
-dev = ["pytest>=8"]
+# me/other speaker labelling (pulls in torch); load_audio uses faster-whisper
+# (torchaudio also does the forced alignment for precise word times)
+speaker = ["speechbrain>=1.0", "torchaudio>=2.1", "faster-whisper>=1.1", "av>=11,<19"]
+# IPA, sound-alike candidates and pronunciation diffs for unsure words (CMU dictionary)
+learn = ["cmudict>=1.0"]
+dev = ["pytest>=8", "cmudict>=1.0"]
 
 [project.scripts]
 recorder = "recorder.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+recorder = ["web.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
