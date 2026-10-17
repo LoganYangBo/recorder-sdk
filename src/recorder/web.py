@@ -234,6 +234,23 @@ class App:
                 raise ApiError(404, f"no recording {rid}")
             return {"ok": True, "name": store.recording(rid).name}
 
+    def delete(self, q, body, rid: int):
+        """Delete a recording. Its audio file is deleted too when it lives in the
+        library folder (imports and live recordings); files elsewhere are kept.
+        """
+        with self.store() as store:
+            rec = store.recording(rid)
+            if rec is None:
+                raise ApiError(404, f"no recording {rid}")
+            path = Path(rec.path).resolve()
+            in_library = path.is_relative_to(self.library.resolve())
+            store.delete(rid)
+        deleted_file = False
+        if in_library and path.is_file():
+            path.unlink()
+            deleted_file = True
+        return {"ok": True, "deleted_file": deleted_file, "path": rec.path}
+
     # ---- import: upload into the library, transcribe in the background ----
 
     def upload(self, q, body: RawBody):
@@ -340,6 +357,7 @@ class App:
 ROUTES = [  # (method, path, handler, raw body)
     ("GET", r"/api/recordings", "recordings"),
     ("POST", r"/api/recordings/(\d+)/rename", "rename"),
+    ("DELETE", r"/api/recordings/(\d+)", "delete"),
     ("POST", r"/api/import", "upload", True),
     ("GET", r"/api/jobs", "job_list"),
     ("POST", r"/api/live/start", "live_start"),

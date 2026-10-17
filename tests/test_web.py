@@ -260,3 +260,22 @@ def test_cli_ui_starts_server(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "recorder UI on http://127.0.0.1:" in out and str(tmp_path / "lib") in out
     assert started and db.exists()
+
+
+def test_delete_recording(server, tmp_path):
+    # a file outside the library: the recording goes, the file stays
+    r = jcall(server, "/api/recordings/1", "DELETE")
+    assert r == {"ok": True, "deleted_file": False, "path": str(tmp_path / "talk.m4a")}
+    assert (tmp_path / "talk.m4a").exists()
+    assert jcall(server, "/api/recordings") == [] and jcall(server, "/api/search?q=hello") == []
+
+    # an imported file lives in the library: deleted with the recording
+    req = urllib.request.Request(server + "/api/import?name=a.m4a", data=b"abc", method="POST")
+    urllib.request.urlopen(req).read()
+    (job,) = wait_jobs(server)
+    r = jcall(server, f"/api/recordings/{job['recording']}", "DELETE")
+    assert r["deleted_file"] and not (tmp_path / "lib" / "a.m4a").exists()
+
+    with pytest.raises(urllib.error.HTTPError) as e:
+        call(server, "/api/recordings/1", "DELETE")
+    assert e.value.code == 404

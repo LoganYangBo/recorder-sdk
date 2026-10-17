@@ -136,3 +136,15 @@ def test_concurrent_opens_migrate_once(tmp_path):
     assert errors == []
     with Store(db) as store:
         assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_delete_removes_segments_and_words(tmp_path):
+    t = Transcript("en", 1, [Segment(0, 1, "hi", words=[Word(0, 1, "hi", 0.9)])])
+    with Store(tmp_path / "t.db") as store:
+        rid = store.save(tmp_path / "a.wav", "h", t)
+        assert store.delete(rid) and not store.delete(rid)
+        counts = [
+            store.conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            for t in ("recordings", "segments", "words")
+        ]
+        assert counts == [0, 0, 0]

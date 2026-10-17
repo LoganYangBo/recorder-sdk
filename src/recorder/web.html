@@ -289,6 +289,7 @@ function renderRec() {
         <h2>${esc(r.name)}</h2>
         ${r.title ? `<span class="file">${esc(r.file)}</span>` : ""}
         <button class="link" id="renameBtn">改名</button>
+        <button class="link danger" id="deleteBtn">删除</button>
       </div>
       <audio id="audio" controls preload="metadata" src="/api/recordings/${r.id}/audio"></audio>
       <div class="toolbar">
@@ -317,6 +318,7 @@ function renderRec() {
   $("#optLow").onchange = e => { state.low = e.target.checked; localSet("low", state.low ? "1" : "0"); renderLines(); };
   $("#enrollBtn").onclick = enrollSelected;
   $("#renameBtn").onclick = startRename;
+  $("#deleteBtn").onclick = deleteRec;
   $("#clearSel").onclick = () => { state.selected.clear(); renderLines(); };
   $("#audio").addEventListener("timeupdate", highlightPlaying);
   renderLines();
@@ -501,6 +503,21 @@ function startRename() {
   $("#titleSave").onclick = save;
   $("#titleCancel").onclick = renderRec;
   inp.onkeydown = e => { if (e.key === "Enter") save(); if (e.key === "Escape") renderRec(); };
+}
+
+// ---------- delete ----------
+async function deleteRec() {
+  const r = state.rec;
+  if (!confirm(`删除“${r.name}”？转写和说话人标签会一起删除，无法恢复。\n` +
+      `如果音频是导入或实时录的（在 recordings 文件夹里），音频文件也会删除；其他位置的原文件保留。`)) return;
+  await busy("删除中…", async () => {
+    const res = await api(`/api/recordings/${r.id}`, { method: "DELETE" });
+    state.rec = null;
+    await loadRecs(); await loadSpeakers();
+    if (state.recs.length) openRec(state.recs[state.recs.length - 1].id);
+    else $("#main").innerHTML = `<div class="empty">还没有录音</div>`;
+    toast(res.deleted_file ? `已删除“${r.name}”和它的音频文件` : `已删除“${r.name}”，原音频文件保留在 ${res.path}`);
+  });
 }
 
 // ---------- import ----------

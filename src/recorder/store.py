@@ -198,6 +198,12 @@ class Store:
         ).fetchone()
         return _rec(row) if row else None
 
+    def delete(self, recording_id: int) -> bool:
+        """Remove a recording and its segments and words. The audio file is left alone."""
+        with self.conn:
+            cur = self.conn.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
+        return cur.rowcount > 0
+
     def rename(self, recording_id: int, title: str | None) -> bool:
         """Set a recording's display name; empty or None goes back to the file name."""
         with self.conn:

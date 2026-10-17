@@ -113,6 +113,14 @@ def cmd_ui(args) -> None:
     )
 
 
+def cmd_delete(args) -> None:
+    with Store(args.db) as store:
+        rec = store.recording(args.recording_id)
+        if rec is None or not store.delete(args.recording_id):
+            raise SystemExit(f"no recording {args.recording_id}")
+    print(f"deleted recording {args.recording_id} ({rec.name}); audio file kept: {rec.path}")
+
+
 def cmd_rename(args) -> None:
     with Store(args.db) as store:
         if not store.rename(args.recording_id, args.title):
@@ -203,6 +211,10 @@ def main(argv: list[str] | None = None) -> None:
     rn.add_argument("recording_id", type=int)
     rn.add_argument("title", help='new name; "" goes back to the file name')
     rn.set_defaults(func=cmd_rename)
+
+    dl = sub.add_parser("delete", help="delete a recording from the database (keeps the file)")
+    dl.add_argument("recording_id", type=int)
+    dl.set_defaults(func=cmd_delete)
 
     u = sub.add_parser("ui", help="open the web UI in your browser")
     u.add_argument("--port", type=int, default=8765)

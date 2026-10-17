@@ -61,6 +61,8 @@ recorder ui                           # opens http://127.0.0.1:8765 in your brow
   the background, with speaker labels.
 - 改名: give a recording a display name (`recorder rename ID "name"` in the CLI). The file on
   disk keeps its name.
+- 删除: delete a recording with its transcript; the audio file is deleted too if it is in
+  the library folder, otherwise kept (`recorder delete ID` in the CLI keeps the file).
 - 实时录音: record from the microphone; the page shows the transcript and speakers as you
   talk, and saves a WAV in the library as a normal recording when you stop.
 - 说话人: list and delete voiceprints, tune the threshold; tick segments in a transcript and
