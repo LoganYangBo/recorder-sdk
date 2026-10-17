@@ -79,11 +79,16 @@ recorder ui                           # opens http://127.0.0.1:8765 in your brow
   downloaded on first use, comes with the `speaker` extra) for word times accurate to
   ~20 ms instead of Whisper's 0.1-0.3 s; "▶ 录音原声" plays just that word, cut on the
   server.
-- 纠错本: every corrected word, with the intended word's IPA against what Whisper heard and
+- 纠错本: every corrected or confirmed word, with the intended word's IPA against what Whisper heard and
   the sounds that differ (e.g. /θ/ said as /s/), the standard pronunciation (a human
   recording from Wiktionary via dictionaryapi.dev, cached; the browser's own voice when
   offline or missing) next to your original audio. 导出 Markdown downloads the list.
   IPA and sound-alikes need `pip install -e '.[learn]'`.
+  Confirmed words (Whisper was right but unsure) stay in the list too, to compare your own
+  pronunciation. The standard pronunciation can also be an American female or male voice
+  (Kokoro-82M via kokoro-onnx, `pip install -e '.[tts]'`, ~340 MB of model files
+  downloaded to `models/kokoro/` next to the database on first use), picked next to the
+  play button.
 
 `recorder ui --model large-v3 --hotwords "Logan"` sets the Whisper options for imports and
 live recording. Whisper and the speaker model run one job at a time, so live transcription

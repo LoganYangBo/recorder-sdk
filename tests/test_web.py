@@ -319,7 +319,9 @@ def test_unsure_word_candidates_and_correction(server, tmp_path):
     assert "| logging | logan |" in md and "hello Logging" in md
 
     jcall(server, f"/api/words/{wid}/correct", "POST", {"word": "logan"})  # it was right
-    assert jcall(server, "/api/corrections") == []
+    (row,) = jcall(server, "/api/corrections")  # kept, to compare pronunciations
+    assert (row["chosen"], row["heard"]) == ("logan", "logan")
+    assert "| logan | （识别对了，但没把握） |" in call(server, "/api/corrections.md")[2].decode()
 
 
 def test_pronunciation_proxy(server, tmp_path):
@@ -374,3 +376,34 @@ def test_word_clip_is_cut_exactly(server):
     assert status == 200 and headers["Content-Type"] == "audio/wav"
     with wave.open(io.BytesIO(body)) as f:
         assert f.getframerate() == SR and f.getnframes() == int(1.1 * SR)  # 1 s + 0.05 s each side
+
+
+def test_synthesised_voices(tmp_path, monkeypatch):
+    import io
+    import wave
+
+    from recorder import tts
+
+    class FakeVoices:
+        def __init__(self, folder):
+            assert folder == tmp_path / "models" / "kokoro"
+
+        def say(self, word, voice):
+            # 0.5 s silence, 0.3 s "speech", 0.5 s silence
+            s = np.zeros(int(1.3 * 24000), np.float32)
+            s[12000:19200] = 0.5 if voice == "female" else -0.5
+            return s, 24000
+
+    monkeypatch.setattr(tts, "KokoroVoices", FakeVoices)
+    app = App(tmp_path / "t.db", library=tmp_path / "lib")
+    data, ctype = app.pronunciation("Think,", "female")
+    assert ctype == "audio/wav"
+    with wave.open(io.BytesIO(data)) as f:
+        assert (
+            f.getframerate() == 24000 and f.getnframes() == 7200 + 2 * 1200
+        )  # trimmed, 50 ms pads
+    assert (tmp_path / "pronunciations" / "female" / "think.wav").read_bytes() == data
+    assert app.pronunciation("think", "male")[0] != data
+    with pytest.raises(Exception) as e:
+        app.pronunciation("think", "robot")
+    assert e.value.status == 400

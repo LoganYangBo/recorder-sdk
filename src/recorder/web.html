@@ -91,8 +91,9 @@ main { overflow-y: auto; }
 .show-low .text .w.low { text-decoration: underline dotted var(--warn) 2px; text-underline-offset: 3px; }
 .show-low .text .w.vlow { color: var(--warn); }
 .text .w.fixed { text-decoration: underline solid var(--s1) 2px; text-underline-offset: 3px; }
-.text .w.low, .text .w.fixed { cursor: help; }
-.pop { position: absolute; z-index: 15; width: 340px; background: var(--panel); border: 1px solid var(--line);
+.text .w.ok { text-decoration: underline dotted var(--s1) 1px; text-underline-offset: 3px; }
+.text .w.low, .text .w.fixed, .text .w.ok { cursor: help; }
+.pop { position: absolute; z-index: 15; width: 390px; background: var(--panel); border: 1px solid var(--line);
   border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.18); padding: 12px 14px; font-size: 13px; }
 .pop .h { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
 .pop .h b { font-size: 15px; }
@@ -106,6 +107,9 @@ main { overflow-y: auto; }
 .ipa { font-family: "Charis SIL", "Doulos SIL", "Segoe UI", serif; font-size: 15px; }
 .ipa .bad { background: color-mix(in srgb, var(--danger) 22%, transparent); color: var(--danger); border-radius: 3px; padding: 0 1px; }
 .ipa .miss { color: var(--danger); text-decoration: line-through; }
+.play-group { display: flex; gap: 4px; align-items: center; }
+select.voice { font-size: 12px; padding: 3px 4px; }
+.pop .cmp { grid-template-columns: 64px 1fr auto; }
 .why { margin-top: 6px; padding: 6px 8px; background: var(--hover); border-radius: 6px; }
 .play { white-space: nowrap; }
 .top a:has(button) { color: inherit; text-decoration: none; }
@@ -367,10 +371,10 @@ function wordsHtml(seg) {
     let cls = p < 0.3 ? "w low vlow" : p < 0.6 ? "w low" : "w", title = `${Math.round(p * 100)}%，点击查看候选`;
     if (orig != null) {
       const changed = norm(orig) !== norm(w);
-      cls = changed ? "w fixed" : "w";
-      title = changed ? `原来听成 “${orig}”，点击对比发音` : "已确认";
+      cls = changed ? "w fixed" : "w ok";
+      title = changed ? `原来听成 “${orig}”，点击对比发音` : "已确认，点击对比发音";
     }
-    if (id == null) cls = cls.replace(/ ?(low|fixed)/g, "");
+    if (id == null) cls = cls.replace(/ ?(low|fixed|ok)/g, "");
     return `<span class="${cls}" data-t="${st}" ${id != null ? `data-wid="${id}"` : ""} title="${esc(title)}">${esc(w)}</span>`;
   }).join(" ");
 }
@@ -408,7 +412,7 @@ function renderLines() {
 }
 
 $("#main").addEventListener("click", e => {
-  const w = e.target.closest(".w.low[data-wid], .w.fixed[data-wid]");
+  const w = e.target.closest(".w.low[data-wid], .w.fixed[data-wid], .w.ok[data-wid]");
   if (w) { openWordPop(w); return; }
   const t = e.target.closest("[data-t]");
   if (t && !e.target.matches("input")) seek(parseFloat(t.dataset.t));
@@ -638,7 +642,7 @@ addEventListener("mousedown", e => { if (pop && !pop.contains(e.target) && !e.ta
 
 function placePop(el) {
   const r = el.getBoundingClientRect();
-  const left = Math.min(Math.max(8, r.left + scrollX - 20), document.documentElement.clientWidth - 356 + scrollX);
+  const left = Math.min(Math.max(8, r.left + scrollX - 20), document.documentElement.clientWidth - 406 + scrollX);
   pop.style.left = left + "px";
   pop.style.top = r.bottom + scrollY + 6 + "px";
   const pr = pop.getBoundingClientRect();
@@ -656,8 +660,8 @@ async function openWordPop(el, repick = false) {
   catch (e) { pop.innerHTML = `<div class="muted">出错：${esc(e.message)}</div>`; return; }
   if (!pop) return;
   const clip = { wid };
-  if (!repick && info.corrected && norm(info.word) !== info.heard) {
-    showCompare(el, { chosen: norm(info.word), heard: info.heard, compare: await api(`/api/compare?target=${encodeURIComponent(norm(info.word))}&heard=${encodeURIComponent(info.heard)}`) }, clip);
+  if (!repick && info.corrected) {
+    showCompare(el, { chosen: norm(info.word), heard: info.heard, probability: info.probability, compare: await api(`/api/compare?target=${encodeURIComponent(norm(info.word))}&heard=${encodeURIComponent(info.heard)}`) }, clip);
     return;
   }
   pop.innerHTML = `
@@ -691,9 +695,8 @@ async function choose(el, wid, word, clip) {
   }
   renderLines();
   const fresh = document.querySelector(`.w[data-wid="${wid}"]`) || el;
-  if (c.heard === c.chosen) { closePop(); toast(`已确认 “${c.chosen}”`); return; }
   showCompare(fresh, c, clip);
-  toast(`已改为 “${c.chosen}”，并记入纠错本`);
+  toast(c.heard === c.chosen ? `已确认 “${c.chosen}”，记入纠错本` : `已改为 “${c.chosen}”，并记入纠错本`);
 }
 
 function ipaDiff(cmp) {
@@ -713,11 +716,22 @@ function ipaDiff(cmp) {
 }
 
 function compareHtml(c) {
+  if (c.heard === c.chosen) {  // confirmed: Whisper got it right but wasn't sure
+    const ipa = c.compare.target_ipa;
+    return `
+    <div class="cmp">
+      <span class="muted">标准</span><span><b>${esc(c.chosen)}</b> ${ipa ? `<span class="ipa">/${esc(ipa)}/</span>` : ""}</span>
+      <span class="play-group"><button class="play" data-say="${esc(c.chosen)}">▶ 标准发音</button>${voiceSelect()}</span>
+      <span class="muted">你的录音</span><span class="muted">识别对了，但只有 ${c.probability != null ? Math.round(c.probability * 100) + "% " : ""}把握</span>
+      <button class="play" data-clip>▶ 录音原声</button>
+    </div>
+    <div class="why">Whisper 对这个词没把握，常见原因是发音不够清楚或太快。对比听听两段。</div>`;
+  }
   const d = ipaDiff(c.compare);
   return `
     <div class="cmp">
       <span class="muted">应该是</span><span><b>${esc(c.chosen)}</b> ${d ? `<span class="ipa">/${d.t}/</span>` : ""}</span>
-      <button class="play" data-say="${esc(c.chosen)}">▶ 标准发音</button>
+      <span class="play-group"><button class="play" data-say="${esc(c.chosen)}">▶ 标准发音</button>${voiceSelect()}</span>
       <span class="muted">听起来像</span><span><b>${esc(c.heard)}</b> ${d ? `<span class="ipa">/${d.h}/</span>` : ""}</span>
       <button class="play" data-clip>▶ 录音原声</button>
     </div>
@@ -749,9 +763,32 @@ async function playWord(wid) {
   try { await wordAudio.play(); } catch { toast("这段原声放不了（录音文件可能不在了）"); }
 }
 
+const VOICES = { dict: "词典真人", female: "美式女声", male: "美式男声" };
+let voice = localGet("voice", "dict");
+if (!(voice in VOICES)) voice = "dict";
+function voiceSelect() {
+  return `<select class="voice" title="标准发音用谁的声音">${Object.entries(VOICES).map(([k, v]) =>
+    `<option value="${k}" ${k === voice ? "selected" : ""}>${v}</option>`).join("")}</select>`;
+}
+addEventListener("change", e => {
+  if (!e.target.matches("select.voice")) return;
+  voice = e.target.value; localSet("voice", voice);
+  document.querySelectorAll("select.voice").forEach(s => s.value = voice);
+});
+
 const sayAudio = new Audio();
 async function sayWord(word) {
   word = norm(word);
+  if (voice !== "dict") {
+    // synthesised: the first time per word takes a moment (and loads the model)
+    const t = setTimeout(() => toast("正在合成…（第一次要下载语音模型）"), 400);
+    try {
+      const res = await fetch(`/api/pronounce?word=${encodeURIComponent(word)}&voice=${voice}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+      sayAudio.src = URL.createObjectURL(await res.blob());
+      clearTimeout(t); await sayAudio.play(); return;
+    } catch (e) { clearTimeout(t); toast(`${VOICES[voice]}用不了：${e.message}`); return; }
+  }
   sayAudio.src = `/api/pronounce?word=${encodeURIComponent(word)}`;
   try { await sayAudio.play(); return; } catch {}
   // no dictionary recording (or offline): fall back to the system voice
@@ -773,13 +810,15 @@ async function showNotes() {
   const rows = await api("/api/corrections");
   $("#main").innerHTML = `<div class="top"><div class="title-row"><h2>纠错本</h2>
       <span class="muted" style="color:var(--muted)">${rows.length} 条</span><span style="flex:1"></span>
+      <span class="muted" style="color:var(--muted)">标准发音</span>${voiceSelect()}
       <a href="/api/corrections.md" download="corrections.md"><button>导出 Markdown</button></a></div></div>
     <div class="notes">${rows.length ? rows.map(c => {
       const d = ipaDiff(c.compare);
       return `<div class="note">
         <div class="words"><b>${esc(c.chosen)}</b> ${d ? `<span class="ipa">/${d.t}/</span>` : ""}
+          ${c.heard === c.chosen ? `<span class="muted">· 识别对了但没把握，听听自己的发音</span>` : `
           <span class="muted">听成</span> ${esc(c.heard)} ${d ? `<span class="ipa">/${d.h}/</span>` : ""}
-          ${d && d.why.length ? `<span class="muted">· ${esc(d.why.join("；"))}</span>` : ""}</div>
+          ${d && d.why.length ? `<span class="muted">· ${esc(d.why.join("；"))}</span>` : ""}`}</div>
         <div class="btns">
           <button class="play" data-say="${esc(c.chosen)}">▶ 标准</button>
           ${c.recording_id ? `<button class="play" data-word="${c.word_id}">▶ 原声</button>

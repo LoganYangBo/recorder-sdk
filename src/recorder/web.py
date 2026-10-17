@@ -132,6 +132,7 @@ class App:
         self.pronouncer = pronouncer
         self._audio_cache: tuple[str, object] | None = None  # (path, samples) of the last file
         self._no_pronunciation: set[str] = set()
+        self._voices = None  # tts.KokoroVoices, loaded on first use
         self.device = device
         self.library = Path(library) if library else Path(db).resolve().parent / "recordings"
         self.whisper = whisper or {}
@@ -519,8 +520,13 @@ class App:
                 c = store.correct_word(wid, chosen)
             except KeyError as e:
                 raise ApiError(404, str(e)) from e
-            word = store.word_context(wid)["word"].word  # as shown, e.g. "Think,"
-        return {**c, "word": word, "compare": learn.compare(c["chosen"], c["heard"])}
+            w = store.word_context(wid)["word"]
+        return {
+            **c,
+            "word": w.word,  # as shown, e.g. "Think,"
+            "probability": w.probability,
+            "compare": learn.compare(c["chosen"], c["heard"]),
+        }
 
     def word_compare(self, q, body):
         from . import learn
@@ -532,14 +538,14 @@ class App:
         from . import learn
 
         with self.store() as store:
-            rows = [c for c in store.corrections() if c["heard"] != c["chosen"]]
+            rows = store.corrections()  # confirmed words too: Whisper wasn't sure of them
         return [{**c, "compare": learn.compare(c["chosen"], c["heard"])} for c in rows]
 
     def corrections_markdown(self) -> bytes:
         from . import learn
 
         with self.store() as store:
-            rows = [c for c in store.corrections() if c["heard"] != c["chosen"]]
+            rows = store.corrections()
         lines = [
             "# 纠错本",
             "",
@@ -548,12 +554,15 @@ class App:
         ]
         for c in rows:
             cmp = learn.compare(c["chosen"], c["heard"])
-            sounds = f"/{cmp['target_ipa']}/ → /{cmp['heard_ipa']}/" if cmp["target_ipa"] else ""
+            same = c["heard"] == c["chosen"]
+            sounds = f"/{cmp['target_ipa']}/" if same and cmp["target_ipa"] else ""
+            if not same and cmp["target_ipa"]:
+                sounds = f"/{cmp['target_ipa']}/ → /{cmp['heard_ipa']}/"
             m, sec = divmod(int(c["start"]), 60)
             cells = [
                 c["created_at"],
                 c["chosen"],
-                c["heard"],
+                "（识别对了，但没把握）" if same else c["heard"],
                 sounds,
                 c["sentence"],
                 f"{c['recording'] or '(已删除)'} @ {m}:{sec:02d}",
@@ -561,12 +570,40 @@ class App:
             lines.append("| " + " | ".join(x.replace("|", "\\|") for x in cells) + " |")
         return ("\n".join(lines) + "\n").encode()
 
-    def pronunciation(self, word: str) -> bytes:
+    def pronunciation(self, word: str, voice: str = "dict") -> tuple[bytes, str]:
+        """(audio, content type) of `word` said by `voice`: dict (a human
+        recording from the dictionary) or female / male (synthesised
+        American English)."""
         from . import learn
 
         word = learn.normalize(word)
         if not word or not re.fullmatch(r"[a-z']+", word):
             raise ApiError(400, "not a word")
+        if voice != "dict":
+            return self._synthesised(word, voice), "audio/wav"
+        return self._dictionary(word), "audio/mpeg"
+
+    def _synthesised(self, word: str, voice: str) -> bytes:
+        from . import tts
+
+        if voice not in tts.VOICES:
+            raise ApiError(400, f"unknown voice {voice}")
+        cache = self.library.parent / "pronunciations" / voice / f"{word}.wav"
+        if cache.is_file():
+            return cache.read_bytes()
+        with self.model_lock:
+            try:
+                if self._voices is None:
+                    self._voices = tts.KokoroVoices(self.library.parent / "models" / "kokoro")
+                samples, rate = self._voices.say(word, voice)
+            except ImportError as e:
+                raise ApiError(501, f'pip install -e ".[tts]" first ({e})') from e
+        data = tts.to_wav(tts.trim(samples, rate), rate)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(data)
+        return data
+
+    def _dictionary(self, word: str) -> bytes:
         cache = self.library.parent / "pronunciations" / f"{word}.mp3"
         if cache.is_file():
             return cache.read_bytes()
@@ -644,10 +681,9 @@ def make_handler(app: App):
                     {"Content-Disposition": "attachment; filename=corrections.md"},
                 )
             if self.command == "GET" and url.path == "/api/pronounce":
-                word = parse_qs(url.query).get("word", [""])[0]
-                return self._send(
-                    200, app.pronunciation(word), "audio/mpeg", {"Cache-Control": "max-age=86400"}
-                )
+                q = parse_qs(url.query)
+                data, ctype = app.pronunciation(q.get("word", [""])[0], q.get("voice", ["dict"])[0])
+                return self._send(200, data, ctype, {"Cache-Control": "max-age=86400"})
             m = re.fullmatch(r"/api/words/(\d+)/clip.wav", url.path)
             if self.command == "GET" and m:
                 return self._send(200, app.word_clip(int(m.group(1))), "audio/wav")

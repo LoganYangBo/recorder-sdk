@@ -20,6 +20,8 @@ cuda = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9,<10"]
 speaker = ["speechbrain>=1.0", "torchaudio>=2.1", "faster-whisper>=1.1", "av>=11,<19"]
 # IPA, sound-alike candidates and pronunciation diffs for unsure words (CMU dictionary)
 learn = ["cmudict>=1.0"]
+# synthesised standard pronunciations: American female / male voices (Kokoro, ONNX)
+tts = ["kokoro-onnx>=0.4"]
 dev = ["pytest>=8", "cmudict>=1.0"]
 
 [project.scripts]
