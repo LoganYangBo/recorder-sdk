@@ -407,3 +407,16 @@ def test_synthesised_voices(tmp_path, monkeypatch):
     with pytest.raises(Exception) as e:
         app.pronunciation("think", "robot")
     assert e.value.status == 400
+
+
+def test_set_start_time(server):
+    assert jcall(server, "/api/recordings")[0]["started_at"] is None
+    r = jcall(server, "/api/recordings/1/started", "POST", {"started_at": "2026-10-16T09:15"})
+    assert r["started_at"] == "2026-10-16T09:15:00"
+    assert jcall(server, "/api/recordings")[0]["started_at"] == "2026-10-16T09:15:00"
+    assert jcall(server, "/api/search?q=there")[0]["started_at"] == "2026-10-16T09:15:00"
+    with pytest.raises(urllib.error.HTTPError) as e:
+        call(server, "/api/recordings/1/started", "POST", {"started_at": "yesterday"})
+    assert e.value.code == 400
+    jcall(server, "/api/recordings/1/started", "POST", {"started_at": ""})
+    assert jcall(server, "/api/recordings")[0]["started_at"] is None

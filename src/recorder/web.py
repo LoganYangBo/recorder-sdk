@@ -222,6 +222,7 @@ class App:
                 {
                     "recording": rec.id,
                     "name": rec.name,
+                    "started_at": rec.started_at,
                     "start": seg.start,
                     "text": seg.text,
                     "speaker": seg.speaker,
@@ -283,6 +284,24 @@ class App:
             if not store.rename(rid, title):
                 raise ApiError(404, f"no recording {rid}")
             return {"ok": True, "name": store.recording(rid).name}
+
+    def set_started(self, q, body, rid: int):
+        """Set (or clear, with "") when a recording started: local time, ISO 8601."""
+        from datetime import datetime
+
+        value = str(body.get("started_at") or "").strip()
+        if value:
+            try:
+                value = (
+                    datetime.fromisoformat(value).replace(tzinfo=None, microsecond=0).isoformat()
+                )
+            except ValueError as e:
+                raise ApiError(400, f"not a date and time: {value}") from e
+        with self.store() as store:
+            if store.recording(rid) is None:
+                raise ApiError(404, f"no recording {rid}")
+            store.set_started_at(rid, value or None)
+        return {"ok": True, "started_at": value or None}
 
     def delete(self, q, body, rid: int):
         """Delete a recording. Its audio file is deleted too when it lives in the
@@ -633,6 +652,7 @@ class App:
 ROUTES = [  # (method, path, handler, raw body)
     ("GET", r"/api/recordings", "recordings"),
     ("POST", r"/api/recordings/(\d+)/rename", "rename"),
+    ("POST", r"/api/recordings/(\d+)/started", "set_started"),
     ("DELETE", r"/api/recordings/(\d+)", "delete"),
     ("POST", r"/api/import", "upload", True),
     ("GET", r"/api/jobs", "job_list"),
@@ -745,6 +765,25 @@ def make_handler(app: App):
     return Handler
 
 
+def _fill_start_times(store: Store) -> None:
+    """Recordings without a start time get one from their file name or metadata, if any;
+    ones saved with a UTC offset (live recordings before 0.3) are put in local time."""
+    from datetime import datetime
+
+    from .sync import _local, started_at_of
+
+    for r in store.recordings():
+        if r.started_at and len(r.started_at) > 19:
+            try:
+                store.set_started_at(r.id, _local(datetime.fromisoformat(r.started_at)))
+            except ValueError:
+                pass
+        elif not r.started_at and Path(r.path).is_file():
+            found = started_at_of(r.path)
+            if found:
+                store.set_started_at(r.id, found)
+
+
 def serve(
     db: str | Path,
     host: str = "127.0.0.1",
@@ -758,7 +797,8 @@ def serve(
 
     aligner = "auto" if find_spec("torchaudio") else None
     app = App(db, device=device, library=library, whisper=whisper, aligner=aligner)
-    Store(db).close()  # create / migrate the database before the first request
+    with Store(db) as store:  # create / migrate the database before the first request
+        _fill_start_times(store)
     if app.suggest_pending():
         print("working out suggestions for unsure words in the background")
     server = ThreadingHTTPServer((host, port), make_handler(app))
