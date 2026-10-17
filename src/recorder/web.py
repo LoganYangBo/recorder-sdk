@@ -33,6 +33,23 @@ AUDIO_TYPES = {
 }
 
 
+# the exported notebook, in the web UI's language
+MARKDOWN_TEXT = {
+    "en": {
+        "title": "Pronunciation notebook",
+        "columns": ["Time", "Meant", "Heard", "IPA", "Sentence", "Recording"],
+        "confirmed": "(right, but Whisper was unsure)",
+        "deleted": "(deleted)",
+    },
+    "zh": {
+        "title": "纠错本",
+        "columns": ["时间", "应为", "听成", "音标", "句子", "录音"],
+        "confirmed": "（识别对了，但没把握）",
+        "deleted": "（已删除）",
+    },
+}
+
+
 class ApiError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
@@ -562,17 +579,14 @@ class App:
             rows = store.corrections()  # confirmed words too: Whisper wasn't sure of them
         return [{**c, "compare": learn.compare(c["chosen"], c["heard"])} for c in rows]
 
-    def corrections_markdown(self) -> bytes:
+    def corrections_markdown(self, lang: str = "en") -> bytes:
         from . import learn
 
+        text = MARKDOWN_TEXT.get(lang, MARKDOWN_TEXT["en"])
         with self.store() as store:
             rows = store.corrections()
-        lines = [
-            "# 纠错本",
-            "",
-            "| 时间 | 应为 | 听成 | 音标 | 句子 | 录音 |",
-            "|---|---|---|---|---|---|",
-        ]
+        lines = [f"# {text['title']}", "", "| " + " | ".join(text["columns"]) + " |"]
+        lines.append("|---" * len(text["columns"]) + "|")
         for c in rows:
             cmp = learn.compare(c["chosen"], c["heard"])
             same = c["heard"] == c["chosen"]
@@ -583,10 +597,10 @@ class App:
             cells = [
                 c["created_at"],
                 c["chosen"],
-                "（识别对了，但没把握）" if same else c["heard"],
+                text["confirmed"] if same else c["heard"],
                 sounds,
                 c["sentence"],
-                f"{c['recording'] or '(已删除)'} @ {m}:{sec:02d}",
+                f"{c['recording'] or text['deleted']} @ {m}:{sec:02d}",
             ]
             lines.append("| " + " | ".join(x.replace("|", "\\|") for x in cells) + " |")
         return ("\n".join(lines) + "\n").encode()
@@ -698,7 +712,7 @@ def make_handler(app: App):
             if self.command == "GET" and url.path == "/api/corrections.md":
                 return self._send(
                     200,
-                    app.corrections_markdown(),
+                    app.corrections_markdown(parse_qs(url.query).get("lang", ["en"])[0]),
                     "text/markdown; charset=utf-8",
                     {"Content-Disposition": "attachment; filename=corrections.md"},
                 )

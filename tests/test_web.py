@@ -321,7 +321,10 @@ def test_unsure_word_candidates_and_correction(server, tmp_path):
     jcall(server, f"/api/words/{wid}/correct", "POST", {"word": "logan"})  # it was right
     (row,) = jcall(server, "/api/corrections")  # kept, to compare pronunciations
     assert (row["chosen"], row["heard"]) == ("logan", "logan")
-    assert "| logan | （识别对了，但没把握） |" in call(server, "/api/corrections.md")[2].decode()
+    md = call(server, "/api/corrections.md")[2].decode()
+    assert md.startswith("# Pronunciation notebook") and "| logan | (right, but" in md
+    md = call(server, "/api/corrections.md?lang=zh")[2].decode()
+    assert md.startswith("# 纠错本") and "| logan | （识别对了，但没把握） |" in md
 
 
 def test_pronunciation_proxy(server, tmp_path):
