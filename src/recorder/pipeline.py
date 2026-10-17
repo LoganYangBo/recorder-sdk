@@ -21,9 +21,10 @@ def file_sha256(path: str | Path) -> str:
 
 @dataclass
 class Result:
-    recording_id: int
+    recording_id: int | None
     path: Path
     skipped: bool  # True if this file was already in the database
+    error: str | None = None  # set (and recording_id None) if processing failed
 
 
 class Pipeline:
@@ -49,9 +50,14 @@ class Pipeline:
         self.reprocess = reprocess
         self._done: set[str] = set()  # hashes handled in this run, so duplicates aren't redone
 
-    def process_file(self, path: str | Path, started_at: str | None = None) -> Result:
+    def process_file(
+        self, path: str | Path, started_at: str | None = None, digest: str | None = None
+    ) -> Result:
+        """Transcribe, label and store one file. `digest` identifies the
+        content (default: the file's sha256; sync passes the hash of the
+        original when it stores a compressed copy)."""
         path = Path(path)
-        digest = file_sha256(path)
+        digest = digest or file_sha256(path)
         existing = self.store.find_by_hash(digest)
         if existing and (not self.reprocess or digest in self._done):
             return Result(existing.id, path, skipped=True)
@@ -68,7 +74,15 @@ class Pipeline:
         return Result(rid, path, skipped=False)
 
     def process_source(self, source: AudioSource) -> list[Result]:
-        return [self.process_file(f.path, f.started_at) for f in source.list_files()]
+        """Process every file; one failing (corrupt, unreadable) doesn't stop
+        the rest: its Result carries the error instead."""
+        results = []
+        for f in source.list_files():
+            try:
+                results.append(self.process_file(f.path, f.started_at))
+            except Exception as e:
+                results.append(Result(None, f.path, False, f"{type(e).__name__}: {e}"))
+        return results
 
     def relabel(self, recording_id: int) -> None:
         """Re-run speaker labelling on a stored recording without re-transcribing,

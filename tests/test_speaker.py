@@ -131,7 +131,7 @@ def test_cli_relabel_threshold_only(tmp_path, capsys):
 
 
 def test_ecapa_embed_shapes():
-    import torch
+    torch = pytest.importorskip("torch")
 
     class FakeClassifier:
         def encode_batch(self, wavs):

@@ -72,7 +72,7 @@ main { overflow-y: auto; }
 .selbar.show { display: flex; flex-wrap: wrap; }
 
 .lines { padding: 8px 12px 80px; }
-.line { display: grid; grid-template-columns: 22px 64px 110px 1fr; gap: 8px; padding: 6px 8px;
+.line { display: grid; grid-template-columns: 22px 92px 110px 1fr; gap: 8px; padding: 6px 8px;
   border-radius: 6px; align-items: baseline; }
 .line:hover { background: var(--hover); }
 .line.playing { background: var(--play); }
@@ -81,7 +81,7 @@ main { overflow-y: auto; }
 .line .t { color: var(--accent); cursor: pointer; font-variant-numeric: tabular-nums; font-size: 13px; }
 .line .t:hover { text-decoration: underline; }
 .line input[type=checkbox] { margin: 0; }
-.mode-turns .line { grid-template-columns: 64px 110px 1fr; }
+.mode-turns .line { grid-template-columns: 70px 110px 1fr; }
 .chip { display: inline-block; font-size: 12px; font-weight: 600; padding: 0 7px; border-radius: 10px;
   border: 1px solid currentColor; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 108px; }
 .chip.none { color: var(--muted); border-style: dashed; font-weight: 400; }
@@ -164,6 +164,9 @@ mark { background: var(--play); color: inherit; padding: 0 1px; }
 .title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .title-row h2 { margin: 0; }
 .title-row .file { color: var(--muted); font-size: 12px; }
+.when { color: var(--muted); font-size: 13px; margin: -4px 0 8px; display: flex; gap: 8px; align-items: center; }
+.when .muted { color: var(--muted); }
+.day { padding: 10px 14px 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
 .title-row input { font-size: 16px; font-weight: 600; flex: 1; max-width: 480px; }
 button.rec-btn { color: var(--danger); border-color: var(--danger); white-space: nowrap; }
 button.rec-btn::before { content: "●"; margin-right: 5px; }
@@ -275,6 +278,19 @@ const fmt = t => {
   t = Math.floor(t); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60;
   return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0");
 };
+// wall-clock time `offset` seconds into a recording, if its start time is known
+const WEEK = "日一二三四五六";
+const startDate = r => r && r.started_at ? new Date(r.started_at) : null;  // local time
+const pad2 = n => String(n).padStart(2, "0");
+function clock(r, offset, secs = true) {
+  const d = startDate(r); if (!d) return null;
+  const t = new Date(d.getTime() + offset * 1000);
+  return pad2(t.getHours()) + ":" + pad2(t.getMinutes()) + (secs ? ":" + pad2(t.getSeconds()) : "");
+}
+const dayLabel = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} 周${WEEK[d.getDay()]}`;
+// a time cell: the wall-clock time when known, the offset into the recording otherwise
+const timeText = (r, offset) => clock(r, offset) ?? fmt(offset);
+const timeTitle = (r, offset) => clock(r, offset) ? `录音第 ${fmt(offset)}` : "这条录音没有开始时间";
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 function speakerColor(name) {
@@ -291,11 +307,20 @@ function chip(name) {
 // ---------- recordings ----------
 async function loadRecs() {
   state.recs = await api("/api/recordings");
-  $("#recs").innerHTML = state.recs.length ? state.recs.map(r => `
+  // grouped by day, newest day first, in time order within a day; undated ones last
+  const groups = new Map();
+  for (const r of [...state.recs].sort((a, b) => (b.started_at || "").localeCompare(a.started_at || "") || b.id - a.id)) {
+    const key = r.started_at ? dayLabel(startDate(r)) : "没有日期";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  const undated = groups.get("没有日期"); groups.delete("没有日期"); if (undated) groups.set("没有日期", undated);
+  $("#recs").innerHTML = state.recs.length ? [...groups].map(([day, recs]) => `
+    <div class="day">${esc(day)}</div>` + recs.sort((a, b) => (a.started_at || "").localeCompare(b.started_at || "") || a.id - b.id).map(r => `
     <div class="rec ${state.rec?.id === r.id ? "active" : ""}" data-id="${r.id}">
       <div class="name" title="${esc(r.path)}">${esc(r.name)}</div>
-      <div class="meta">#${r.id} · ${fmt(r.duration)} · ${r.segments} 段 · ${esc(r.model || "?")}</div>
-    </div>`).join("") : `<div class="empty">还没有录音。先运行<br><code>recorder transcribe 文件</code></div>`;
+      <div class="meta">${r.started_at ? `${clock(r, 0, false)}–${clock(r, r.duration, false)}` : "#" + r.id} · ${fmt(r.duration)} · ${r.segments} 段 · ${esc(r.model || "?")}</div>
+    </div>`).join("")).join("") : `<div class="empty">还没有录音。先运行<br><code>recorder transcribe 文件</code></div>`;
 }
 $("#recs").addEventListener("click", e => {
   const el = e.target.closest(".rec"); if (el) { stopLiveView(); openRec(+el.dataset.id); }
@@ -320,6 +345,10 @@ function renderRec() {
         <button class="link" id="renameBtn">改名</button>
         <button class="link danger" id="deleteBtn">删除</button>
       </div>
+      <div class="when" id="whenRow">${r.started_at
+        ? `${esc(dayLabel(startDate(r)))} ${clock(r, 0)} – ${clock(r, r.duration)}`
+        : `<span class="muted">不知道这条录音是什么时候录的</span>`}
+        <button class="link" id="whenBtn">${r.started_at ? "改时间" : "设置开始时间"}</button></div>
       <audio id="audio" controls preload="metadata" src="/api/recordings/${r.id}/audio"></audio>
       <div class="toolbar">
         <span class="seg-toggle">
@@ -347,6 +376,7 @@ function renderRec() {
   $("#optLow").onchange = e => { state.low = e.target.checked; localSet("low", state.low ? "1" : "0"); renderLines(); };
   $("#enrollBtn").onclick = enrollSelected;
   $("#renameBtn").onclick = startRename;
+  $("#whenBtn").onclick = startSetWhen;
   $("#deleteBtn").onclick = deleteRec;
   $("#clearSel").onclick = () => { state.selected.clear(); renderLines(); };
   $("#audio").addEventListener("timeupdate", highlightPlaying);
@@ -391,7 +421,7 @@ function renderLines() {
   if (isTurns) {
     lines.innerHTML = turns(state.segs).map(t => `
       <div class="line" data-start="${t.start}" data-end="${t.end}">
-        <span class="t" data-t="${t.start}">${fmt(t.start)}</span>
+        <span class="t" data-t="${t.start}" title="${timeTitle(state.rec, t.start)}">${timeText(state.rec, t.start)}</span>
         <span class="who">${chip(t.speaker)}</span>
         <span class="text">${t.segs.map(wordsHtml).join(" ")}</span>
       </div>`).join("");
@@ -402,7 +432,7 @@ function renderLines() {
       return `
       <div class="line" data-start="${s.start}" data-end="${s.end}" data-n="${s.n}">
         <input type="checkbox" data-n="${s.n}" ${state.selected.has(s.n) ? "checked" : ""}>
-        <span class="t" data-t="${s.start}">${fmt(s.start)}<span class="n"> #${s.n}</span></span>
+        <span class="t" data-t="${s.start}" title="${timeTitle(state.rec, s.start)}">${timeText(state.rec, s.start)}<span class="n"> #${s.n}</span></span>
         <span class="who">${chip(s.speaker)}${score}</span>
         <span class="text">${wordsHtml(s)}</span>
       </div>`;
@@ -514,7 +544,7 @@ async function search(q) {
     <div class="top"><h2>“${esc(q)}” 共 ${hits.length} 条${hits.length === 100 ? "（只显示前 100）" : ""}</h2></div>
     ${hits.map(h => `<div class="hit" data-rec="${h.recording}" data-start="${h.start}">
       <div>${chip(h.speaker)} ${esc(h.text).replace(re, m => `<mark>${m}</mark>`)}</div>
-      <div class="meta">${esc(h.name)} · ${fmt(h.start)}</div></div>`).join("")}
+      <div class="meta">${esc(h.name)} · ${h.started_at ? esc(dayLabel(startDate(h))) + " " + clock(h, h.start) : fmt(h.start)}</div></div>`).join("")}
   </div>`;
 }
 $("#main").addEventListener("click", e => {
@@ -541,6 +571,27 @@ function startRename() {
   $("#titleSave").onclick = save;
   $("#titleCancel").onclick = renderRec;
   inp.onkeydown = e => { if (e.key === "Enter") save(); if (e.key === "Escape") renderRec(); };
+}
+
+// ---------- start time ----------
+function startSetWhen() {
+  const r = state.rec, row = $("#whenRow");
+  const d = startDate(r) || new Date();
+  const local = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  row.innerHTML = `开始于 <input type="datetime-local" step="1" id="whenIn" value="${local}">
+    <button class="primary" id="whenSave">保存</button>
+    ${r.started_at ? `<button class="link" id="whenClear">清除</button>` : ""}
+    <button class="link" id="whenCancel">取消</button>`;
+  const set = async value => {
+    try {
+      await api(`/api/recordings/${r.id}/started`, { method: "POST", body: { started_at: value } });
+      await loadRecs(); state.rec = state.recs.find(x => x.id === r.id); renderRec();
+      toast(value ? "已设置开始时间" : "已清除开始时间");
+    } catch (e) { toast("出错：" + e.message); }
+  };
+  $("#whenSave").onclick = () => set($("#whenIn").value);
+  if (r.started_at) $("#whenClear").onclick = () => set("");
+  $("#whenCancel").onclick = renderRec;
 }
 
 // ---------- delete ----------

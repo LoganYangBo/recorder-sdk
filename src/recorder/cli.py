@@ -6,7 +6,7 @@ from pathlib import Path
 from . import ops
 from .pipeline import Pipeline
 from .store import Store
-from .sync import FolderSource
+from .sync import AudioFile, FolderSource, find_devices
 from .turns import merge_turns
 
 
@@ -74,10 +74,23 @@ def cmd_relabel(args) -> None:
             print(f"recording {rid}: relabelled")
 
 
-def cmd_transcribe(args) -> None:
+class _Files:
+    """A source of explicitly named files."""
+
+    def __init__(self, paths):
+        self.paths = paths
+
+    def list_files(self):
+        from .sync import started_at_of
+
+        for p in self.paths:
+            yield AudioFile(p, started_at_of(p))
+
+
+def _transcriber(args):
     from .transcribe import WhisperTranscriber
 
-    transcriber = WhisperTranscriber(
+    return WhisperTranscriber(
         model=args.model,
         device=args.device,
         compute_type=args.compute_type,
@@ -85,20 +98,127 @@ def cmd_transcribe(args) -> None:
         initial_prompt=args.prompt,
         hotwords=args.hotwords,
     )
-    aligner = None if args.no_suggest else _aligner(args.device)
+
+
+def cmd_transcribe(args) -> None:
+    transcriber = _transcriber(args)
+    aligner = _LazyAligner(args.device)
+    failed = 0
     with Store(args.db) as store:
         labeler = None if args.no_speakers else _voiceprint_labeler(store, args)
         pipe = Pipeline(transcriber, store, labeler, reprocess=args.reprocess)
         for target in args.paths:
             p = Path(target)
-            results = pipe.process_source(FolderSource(p)) if p.is_dir() else [pipe.process_file(p)]
-            for r in results:
+            source = FolderSource(p) if p.is_dir() else _Files([p])
+            for r in pipe.process_source(source):
+                if r.error:
+                    failed += 1
+                    print(f"{r.path}: FAILED {r.error}")
+                    continue
                 status = (
                     "skip (already in db)" if r.skipped else f"ok -> recording {r.recording_id}"
                 )
                 print(f"{r.path}: {status}")
                 if not args.no_suggest:
-                    _suggest(store, transcriber, r.recording_id, aligner)
+                    _suggest(store, transcriber, r.recording_id, aligner())
+    if failed:
+        raise SystemExit(f"{failed} file(s) failed")
+
+
+class _LazyAligner:
+    """Loads the aligner (a large download the first time) only when needed."""
+
+    def __init__(self, device: str):
+        self.device, self.loaded, self.aligner = device, False, None
+
+    def __call__(self):
+        if not self.loaded:
+            self.aligner, self.loaded = _aligner(self.device), True
+        return self.aligner
+
+
+def cmd_sync(args) -> None:
+    import time
+
+    from .ingest import Syncer
+
+    library = Path(args.library) if args.library else Path(args.db).resolve().parent / "recordings"
+    transcriber = None
+    aligner = _LazyAligner(args.device)
+
+    def run(source, store):
+        nonlocal transcriber
+        transcriber = transcriber or _transcriber(args)
+        labeler = None if args.no_speakers else _voiceprint_labeler(store, args)
+        syncer = Syncer(
+            store,
+            Pipeline(transcriber, store, labeler),
+            library,
+            compress=not args.keep_wav,
+            delete_source=args.delete,
+            after=None
+            if args.no_suggest
+            else lambda rid: _suggest(store, transcriber, rid, aligner()),
+            log=print,
+        )
+        results = syncer.sync(source, retry=args.retry)
+        counts = {}
+        for r in results:
+            counts[r.status] = counts.get(r.status, 0) + 1
+        print(f"{getattr(source, 'root', '')}: " + ", ".join(f"{n} {k}" for k, n in counts.items()))
+        return results
+
+    with Store(args.db) as store:
+        if args.source:
+            run(FolderSource(args.source), store)
+            return
+        if not args.watch:
+            devices = find_devices()
+            if not devices:
+                raise SystemExit("no recorder found: plug it in, or give a folder to sync")
+            for d in devices:
+                run(d, store)
+            return
+        print("waiting for the recorder (Ctrl+C to stop)...")
+        synced: set[str] = set()  # devices synced since they were plugged in
+        try:
+            while True:
+                devices = {d.id: d for d in find_devices()}
+                for dev_id, d in devices.items():
+                    if dev_id not in synced:
+                        print(f"recorder {dev_id} found at {d.drive}")
+                        run(d, store)
+                        synced.add(dev_id)
+                        print("done; you can unplug it")
+                synced &= set(devices)  # unplugged: sync again next time
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            pass
+
+
+def cmd_dates(args) -> None:
+    from .sync import started_at_of
+
+    with Store(args.db) as store:
+        for r in store.recordings():
+            if r.started_at and not args.force:
+                continue
+            found = started_at_of(r.path) if Path(r.path).exists() else None
+            if found:
+                store.set_started_at(r.id, found)
+            print(f"{r.id:>4}  {found or '?':<19}  {r.name}")
+
+
+def cmd_status(args) -> None:
+    with Store(args.db) as store:
+        files = store.files()
+        counts = {}
+        for f in files:
+            counts[f["status"]] = counts.get(f["status"], 0) + 1
+        print(", ".join(f"{n} {k}" for k, n in counts.items()) or "nothing synced yet")
+        for f in files:
+            if f["status"] != "done":
+                print(f"  {f['status']:<8} x{f['attempts']}  {f['source']}  {f['error'] or ''}")
 
 
 def _aligner(device: str):
@@ -182,13 +302,21 @@ def cmd_list(args) -> None:
         for r in store.recordings():
             model = r.params.get("model", "?")
             name = f"{r.title}  ({r.path})" if r.title else r.path
-            print(f"{r.id:>4}  {_fmt(r.duration)}  {r.language}  {model:<10}  {name}")
+            when = (r.started_at or "").replace("T", " ")[:16] or "-"
+            print(f"{r.id:>4}  {when:<16}  {_fmt(r.duration)}  {r.language}  {model:<10}  {name}")
 
 
 def cmd_search(args) -> None:
     with Store(args.db) as store:
-        for rec, seg in store.search(args.query):
-            print(f"#{rec.id} {_fmt(seg.start)}  {seg.text}")
+        since = until = None
+        if args.day:
+            from .api import _day_range
+
+            since, until = _day_range(args.day)
+        for rec, seg in store.search(args.query, args.limit, args.speaker, since, until):
+            who = f"[{seg.speaker}] " if seg.speaker else ""
+            when = f"{rec.started_at[:10]} " if rec.started_at else ""
+            print(f"#{rec.id} {when}{_fmt(seg.start)}  {who}{seg.text}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -272,8 +400,44 @@ def main(argv: list[str] | None = None) -> None:
     u.add_argument("--no-open", action="store_true", help="don't open a browser")
     u.set_defaults(func=cmd_ui)
 
+    sy = sub.add_parser(
+        "sync",
+        help="copy recordings from the recorder (or a folder) into the library and transcribe",
+    )
+    sy.add_argument("source", nargs="?", help="a folder; default: the plugged-in recorder")
+    sy.add_argument("--watch", action="store_true", help="keep waiting for the recorder")
+    sy.add_argument("--interval", type=float, default=5, help="seconds between checks (--watch)")
+    sy.add_argument(
+        "--library", default=None, help="where copies go (default: recordings/ by the db)"
+    )
+    sy.add_argument(
+        "--delete", action="store_true", help="delete files from the source once safely synced"
+    )
+    sy.add_argument("--keep-wav", action="store_true", help="don't compress WAV to Opus")
+    sy.add_argument("--retry", action="store_true", help="also retry files that failed 3 times")
+    sy.add_argument("--model", default="large-v3")
+    sy.add_argument("--device", default="auto", help="auto / cuda / cpu")
+    sy.add_argument("--compute-type", default="default")
+    sy.add_argument("--language", default=None)
+    sy.add_argument("--prompt", default=None)
+    sy.add_argument("--hotwords", default=None)
+    sy.add_argument("--no-speakers", action="store_true")
+    sy.add_argument("--no-suggest", action="store_true")
+    sy.add_argument("--threshold", type=float, default=0.3, help="min voiceprint similarity")
+    sy.set_defaults(func=cmd_sync)
+
+    dt = sub.add_parser("dates", help="fill in start times from file names / metadata")
+    dt.add_argument("--force", action="store_true", help="also redo recordings that have one")
+    dt.set_defaults(func=cmd_dates)
+
+    st = sub.add_parser("status", help="files synced, and any that failed")
+    st.set_defaults(func=cmd_status)
+
     q = sub.add_parser("search", help="search transcript text")
-    q.add_argument("query")
+    q.add_argument("query", help="words that must all appear (any language)")
+    q.add_argument("--speaker", help='only this speaker, e.g. "me"')
+    q.add_argument("--day", help="only recordings started on this day, e.g. 2026-10-16")
+    q.add_argument("--limit", type=int, default=50)
     q.set_defaults(func=cmd_search)
 
     args = ap.parse_args(argv)

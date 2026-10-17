@@ -112,6 +112,7 @@ def test_migrates_pre_versioning_database(tmp_path):
         assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert store.recordings()[0].params == {}
         assert store.segments(1, words=True)[0].text == "old"
+        assert store.search("old")[0][1].text == "old"  # existing text indexed for search
     with Store(db):  # reopening is a no-op
         pass
 

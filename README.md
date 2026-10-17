@@ -12,6 +12,12 @@ Files are deduplicated by content hash, so re-running on the same folder is chea
 pip install -e '.[whisper,dev]'
 ```
 
+From another project, pin a released version straight from GitHub:
+
+```bash
+pip install "recorder[whisper,speaker,learn] @ git+https://github.com/LoganYangBo/recorder-sdk@v0.3.0"
+```
+
 GPU: faster-whisper needs CUDA 12 cuBLAS + cuDNN 9. If they aren't installed system-wide
 (typical on Windows: `cublas64_12.dll is not found`), install them from pip:
 
@@ -33,7 +39,32 @@ recorder transcribe ~/recordings/ --model large-v3 --reprocess       # redo file
 recorder list
 recorder show 1
 recorder search "hello"
+recorder search "ship friday" --speaker me --day 2026-10-16
 ```
+
+## Syncing the recorder
+
+```bash
+recorder sync                 # the plugged-in recorder, once
+recorder sync --watch         # wait for it; sync each time it is plugged in
+recorder sync D:\phone-recs   # or any folder
+recorder sync --delete        # free the device's card once files are safely synced
+recorder status               # what was synced, and what failed
+recorder dates                # fill in start times of older recordings from their names
+```
+
+The device is a USB drive with `recorder-device.json` (`{"id": "..."}`) at its root and its
+recordings in `REC/`, each named by its local start time: `REC/20261016T091500.wav`. Other
+names work too (`20261016_091500`, `2026-10-16 09.15.00`, phone metadata), and set the
+recording's `started_at`, which day-based queries rely on.
+
+Each file is hashed, so files already in the database are skipped. New ones are copied into
+the library (`recordings/YYYY/MM/DD/`, next to the database or `--library`), WAV compressed
+to Ogg Opus at 32 kbps (about 8x smaller, `--keep-wav` to skip), then transcribed, labelled,
+aligned and analysed like `transcribe`. Each file's outcome goes in the `files` table: a
+failing file (corrupt, unreadable) is logged with its error and doesn't stop the rest; the
+next sync retries it, up to 3 times (`--retry` for more). `--delete` only removes a file from
+the device once its copy is in the library and the database.
 
 `--db` picks the SQLite file (default `recorder.db`).
 `--prompt` passes Whisper an initial prompt (a sentence in your own style and vocabulary); `--hotwords` biases it towards specific terms.
@@ -120,23 +151,45 @@ segments at once; 30 s or more of their speech works best.
 
 ## Python
 
+Apps (English practice, daily review, ...) read through `Recorder`, which answers in terms of
+days, people and words, so they don't depend on the database tables:
+
 ```python
-from recorder import Pipeline, Store, WhisperTranscriber, FolderSource
+from recorder import Recorder
+
+with Recorder("recorder.db") as rec:
+    for day in rec.days():                               # dates with recordings, speakers
+        print(day.date, day.seconds, day.speakers)
+    for u in rec.my_utterances(day="2026-10-16"):        # what I said, as speaker turns
+        print(u.at, u.text)
+    rec.utterances(speaker="Alice", since="2026-10-01")  # anyone's, any range
+    rec.search("ship friday", speaker="me")              # full-text, any language
+    for w in rec.unsure_words(speaker="me"):             # words to practise
+        print(w.word, w.candidates, w.sentence, w.at)
+    rec.corrections()                                    # the 纠错本
+```
+
+Ingesting from code:
+
+```python
+from recorder import Pipeline, Store, Syncer, WhisperTranscriber, find_devices
 
 with Store("recorder.db") as store:
     pipe = Pipeline(WhisperTranscriber(model="large-v3"), store)
-    pipe.process_source(FolderSource("~/recordings"))
-    for rec, seg in store.search("hello"):
-        print(rec.path, seg.start, seg.text)
+    for device in find_devices():
+        Syncer(store, pipe, "recordings").sync(device)
 ```
 
 ## Extension points
 
 - `SpeakerLabeler` (`speaker.py`): sets `Segment.speaker`. `VoiceprintLabeler` takes any `Embedder`; `NoopLabeler` leaves it `None`.
-- `AudioSource` (`sync.py`): where files come from. `FolderSource` today; a USB device source later, which also fills `started_at`.
+- `AudioSource` (`sync.py`): where files come from, with their start times. `FolderSource` and `DeviceSource` (the recorder over USB); a serial or BLE transfer would be another source.
 
 ## Tests
 
 ```bash
 pytest
 ```
+
+CI (GitHub Actions) runs ruff and the tests on Linux and Windows, Python 3.11 and 3.13, on
+every push and pull request. The tests use fakes for every model, so no GPU or downloads.
