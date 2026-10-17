@@ -547,18 +547,25 @@ async function uploadFiles(files) {
   }
 }
 
-let jobsTimer, seenDone = new Set();
+// Finished imports leave the list a few seconds after they finish; errors stay
+// until dismissed. Jobs already finished when the page loads are not shown.
+let jobsTimer, firstPoll = true;
+const seenDone = new Set(), hidden = new Set();
 async function pollJobs() {
   clearTimeout(jobsTimer);
   const jobs = await api("/api/jobs").catch(() => []);
-  renderJobs(jobs);
   let changed = false;
   for (const j of jobs) {
-    if (["done", "duplicate"].includes(j.status) && !seenDone.has(j.id)) {
+    const finished = j.status === "done" || j.status === "duplicate";
+    if (firstPoll && (finished || j.status === "error")) { hidden.add(j.id); seenDone.add(j.id); continue; }
+    if (finished && !seenDone.has(j.id)) {
       seenDone.add(j.id); changed = true;
       if (j.status === "duplicate") toast(`${j.name} 之前已经导入过`);
+      setTimeout(() => { hidden.add(j.id); renderJobs(); }, 4000);
     }
   }
+  firstPoll = false;
+  renderJobs(jobs);
   if (changed) await loadRecs();
   if (jobs.some(j => ["queued", "running"].includes(j.status)) || uploading.length)
     jobsTimer = setTimeout(pollJobs, 2000);
@@ -568,15 +575,18 @@ function renderJobs(jobs = renderJobs.last || []) {
   const label = { queued: "排队中", running: "转写中", done: "完成", duplicate: "已存在", error: "出错" };
   const rows = [
     ...uploading.map(u => `<div class="job"><span class="spin"></span><span class="jn">${esc(u.name)}</span><span class="st">上传中</span></div>`),
-    ...jobs.map(j => `<div class="job" ${j.recording ? `data-open="${j.recording}" style="cursor:pointer"` : ""}>
+    ...jobs.filter(j => !hidden.has(j.id)).map(j => `<div class="job" ${j.recording ? `data-open="${j.recording}" style="cursor:pointer"` : ""}>
       ${["queued", "running"].includes(j.status) ? `<span class="spin"></span>` : ""}
       <span class="jn">${esc(j.name)}</span>
-      <span class="st ${j.status === "error" ? "err" : j.status === "done" ? "ok" : ""}" title="${esc(j.error || "")}">${label[j.status]}</span></div>`),
+      <span class="st ${j.status === "error" ? "err" : j.status === "done" ? "ok" : ""}" title="${esc(j.error || "")}">${label[j.status]}</span>
+      ${j.status === "error" ? `<button class="link" data-dismiss="${j.id}" title="关闭">✕</button>` : ""}</div>`),
   ];
   $("#jobsBox").hidden = !rows.length;
   $("#jobs").innerHTML = rows.join("");
 }
 $("#jobs").addEventListener("click", e => {
+  const d = e.target.closest("[data-dismiss]");
+  if (d) { hidden.add(+d.dataset.dismiss); renderJobs(); return; }
   const el = e.target.closest("[data-open]"); if (el) { stopLiveView(); openRec(+el.dataset.open); }
 });
 
