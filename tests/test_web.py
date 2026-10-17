@@ -120,13 +120,13 @@ def test_enroll_relabel_forget(server):
         "other",
     ]
 
-    jcall(
+    r = jcall(
         server,
         "/api/speakers/enroll",
         "POST",
-        {"name": "Alice", "recording": 1, "segments": [2, 3]},
+        {"name": "Alice", "recording": 1, "segments": [2, 3], "threshold": 0.8},
     )
-    jcall(server, "/api/relabel", "POST", {"threshold": 0.8, "rescore": True})
+    assert r["labelled"] == 2  # re-labelled right away, no separate rescore needed
     segs = jcall(server, "/api/recordings/1/segments")
     assert [s["speaker"] for s in segs] == ["me", "Alice", "Alice"]
     speakers = jcall(server, "/api/speakers")

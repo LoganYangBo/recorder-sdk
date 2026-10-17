@@ -192,15 +192,20 @@ class App:
         name = str(body.get("name", "")).strip()
         rid = body.get("recording")
         indices = [int(i) for i in body.get("segments", [])]
+        threshold = float(body.get("threshold", 0.3))
         with self.store() as store, self.model_lock:
             try:
                 audios = ops.segment_audio(store, int(rid), indices)
                 ops.enroll_voice(store, self.embedder(), name, audios)
+                # re-label this recording right away so the new name shows up;
+                # other recordings are re-scored on demand (it re-reads their audio)
+                ops.relabel(store, self._labeler(store, threshold), [int(rid)], rescore=True)
             except (ValueError, TypeError) as e:
                 raise ApiError(400, str(e)) from e
             except FileNotFoundError as e:
                 raise ApiError(400, f"audio file not found: {e.filename}") from e
-        return {"ok": True}
+            labelled = sum(s.speaker == name for s in store.segments(int(rid)))
+        return {"ok": True, "labelled": labelled}
 
     def forget(self, q, body, name: str):
         with self.store() as store:

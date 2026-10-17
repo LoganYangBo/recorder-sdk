@@ -415,13 +415,14 @@ async function enrollSelected() {
   if (!name) { toast("先填名字"); return; }
   const exists = state.speakers.some(s => s.name === name);
   if (exists && !confirm(`已有“${name}”的声纹，用选中的段覆盖它？`)) return;
-  await busy(`正在录入 ${name} 的声纹…（第一次会加载模型）`, async () => {
-    await api("/api/speakers/enroll", { method: "POST",
-      body: { name, recording: state.rec.id, segments: [...state.selected] } });
-    state.selected.clear();
+  await busy(`正在录入 ${name} 的声纹并重新标注这条录音…（第一次会加载模型）`, async () => {
+    const r = await api("/api/speakers/enroll", { method: "POST",
+      body: { name, recording: state.rec.id, segments: [...state.selected], threshold: state.threshold } });
     await loadSpeakers();
-    toast(`已录入 ${name}。点“说话人 → 重新计算全部”给所有录音重新打标签`);
-    renderRec();
+    await openRec(state.rec.id);
+    toast(r.labelled
+      ? `已录入 ${name}，这条录音里有 ${r.labelled} 段标成了 ${name}。其他录音点“说话人 → 重新计算全部”`
+      : `已录入 ${name}，但这条录音没有一段超过阈值。勾上“显示分数”看看，可能要调低阈值`);
   });
 }
 
