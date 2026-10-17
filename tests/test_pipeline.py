@@ -114,3 +114,37 @@ def test_migrates_pre_versioning_database(tmp_path):
         assert store.segments(1, words=True)[0].text == "old"
     with Store(db):  # reopening is a no-op
         pass
+
+
+def test_concurrent_opens_migrate_once(tmp_path):
+    import threading
+
+    db = tmp_path / "race.db"
+    errors = []
+
+    def open_store():
+        try:
+            Store(db).close()
+        except Exception as e:  # pragma: no cover - the failure being tested for
+            errors.append(e)
+
+    threads = [threading.Thread(target=open_store) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    with Store(db) as store:
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_delete_removes_segments_and_words(tmp_path):
+    t = Transcript("en", 1, [Segment(0, 1, "hi", words=[Word(0, 1, "hi", 0.9)])])
+    with Store(tmp_path / "t.db") as store:
+        rid = store.save(tmp_path / "a.wav", "h", t)
+        assert store.delete(rid) and not store.delete(rid)
+        counts = [
+            store.conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            for t in ("recordings", "segments", "words")
+        ]
+        assert counts == [0, 0, 0]
