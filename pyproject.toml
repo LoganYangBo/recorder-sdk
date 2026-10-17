@@ -17,7 +17,9 @@ whisper = ["faster-whisper>=1.1", "av>=11,<19"]
 cuda = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9,<10"]
 # me/other speaker labelling (pulls in torch); load_audio uses faster-whisper
 speaker = ["speechbrain>=1.0", "faster-whisper>=1.1", "av>=11,<19"]
-dev = ["pytest>=8"]
+# IPA, sound-alike candidates and pronunciation diffs for unsure words (CMU dictionary)
+learn = ["cmudict>=1.0"]
+dev = ["pytest>=8", "cmudict>=1.0"]
 
 [project.scripts]
 recorder = "recorder.cli:main"

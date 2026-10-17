@@ -67,6 +67,15 @@ recorder ui                           # opens http://127.0.0.1:8765 in your brow
   talk, and saves a WAV in the library as a normal recording when you stop.
 - 说话人: list and delete voiceprints, tune the threshold; tick segments in a transcript and
   enter a name to enroll that person.
+- Unsure words (orange underline): click one to get up to 4 guesses at what was really said
+  (Whisper re-decoding that spot at higher temperature, plus dictionary words one or two
+  sounds away), each with its IPA. Pick one, type another, or confirm the original. The
+  transcript is fixed in place and the pick is logged.
+- 纠错本: every corrected word, with the intended word's IPA against what Whisper heard and
+  the sounds that differ (e.g. /θ/ said as /s/), the standard pronunciation (a human
+  recording from Wiktionary via dictionaryapi.dev, cached; the browser's own voice when
+  offline or missing) next to your original audio. 导出 Markdown downloads the list.
+  IPA and sound-alikes need `pip install -e '.[learn]'`.
 
 `recorder ui --model large-v3 --hotwords "Logan"` sets the Whisper options for imports and
 live recording. Whisper and the speaker model run one job at a time, so live transcription

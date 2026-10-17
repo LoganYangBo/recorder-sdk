@@ -10,6 +10,8 @@ class Word:
     end: float
     word: str
     probability: float  # Whisper's confidence for this word, 0..1
+    id: int | None = None  # database id, when loaded from a Store
+    original: str | None = None  # what Whisper heard, if the user corrected or confirmed it
 
 
 @dataclass

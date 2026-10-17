@@ -40,6 +40,13 @@ class FakeTranscriber:
         segs = [Segment(0, 2, "imported a"), Segment(2, 4, "imported b"), Segment(4, 6, "c")]
         return Transcript("en", 6, segs, params=self.params)
 
+    def alternatives(self, audio, start, end, language=None):
+        assert len(audio) == 2 * SR and (start, end) == (1, 2)  # the word within its segment
+        return ["Logan", "logging", "Logan", "logan", "lagoon"]
+
+    def word_rank(self, word):
+        return 0
+
 
 @pytest.fixture
 def server(tmp_path, monkeypatch):
@@ -67,7 +74,11 @@ def server(tmp_path, monkeypatch):
         ("127.0.0.1", 0),
         make_handler(
             App(
-                db, embedder=BandEmbedder(), transcriber=FakeTranscriber(), library=tmp_path / "lib"
+                db,
+                embedder=BandEmbedder(),
+                transcriber=FakeTranscriber(),
+                library=tmp_path / "lib",
+                pronouncer=lambda w: b"MP3" if w == "logan" else None,
             )
         ),
     )
@@ -98,7 +109,8 @@ def test_index_and_listing(server):
     assert rec["name"] == "talk.m4a" and rec["segments"] == 3 and rec["model"] == "large-v3"
     segs = jcall(server, "/api/recordings/1/segments")
     assert [s["n"] for s in segs] == [1, 2, 3]
-    assert segs[0]["words"][1] == ["Logan", 1, 2, 0.2]
+    assert segs[0]["words"][1][:4] == ["Logan", 1, 2, 0.2]
+    assert segs[0]["words"][1][5] is None  # not corrected
     assert jcall(server, "/api/search?q=there")[0]["text"] == "hi there"
 
 
@@ -279,3 +291,36 @@ def test_delete_recording(server, tmp_path):
     with pytest.raises(urllib.error.HTTPError) as e:
         call(server, "/api/recordings/1", "DELETE")
     assert e.value.code == 404
+
+
+def test_unsure_word_candidates_and_correction(server, tmp_path):
+    wid = jcall(server, "/api/recordings/1/segments")[0]["words"][1][4]
+    info = jcall(server, f"/api/words/{wid}/candidates")
+    assert (info["heard"], info["corrected"], info["probability"]) == ("logan", False, 0.2)
+    words = [c["word"] for c in info["candidates"]]
+    assert words[:2] == ["logging", "lagoon"] and len(words) <= 4 and "logan" not in words
+
+    c = jcall(server, f"/api/words/{wid}/correct", "POST", {"word": "Logging"})
+    assert (c["heard"], c["chosen"], c["word"]) == ("logan", "logging", "Logging")
+    assert c["compare"]["target_ipa"] and c["compare"]["ops"]
+    seg = jcall(server, "/api/recordings/1/segments")[0]
+    assert seg["text"] == "hello Logging" and seg["words"][1][5] == "Logan"
+    assert jcall(server, f"/api/words/{wid}/candidates")["corrected"]
+
+    (row,) = jcall(server, "/api/corrections")
+    assert (row["chosen"], row["heard"], row["recording"]) == ("logging", "logan", "talk.m4a")
+    md = call(server, "/api/corrections.md")[2].decode()
+    assert "| logging | logan |" in md and "hello Logging" in md
+
+    jcall(server, f"/api/words/{wid}/correct", "POST", {"word": "logan"})  # it was right
+    assert jcall(server, "/api/corrections") == []
+
+
+def test_pronunciation_proxy(server, tmp_path):
+    status, headers, body = call(server, "/api/pronounce?word=Logan")
+    assert status == 200 and body == b"MP3" and headers["Content-Type"] == "audio/mpeg"
+    assert (tmp_path / "pronunciations" / "logan.mp3").read_bytes() == b"MP3"
+    for word, code in [("nothing", 404), ("..%2F1", 400)]:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            call(server, f"/api/pronounce?word={word}")
+        assert e.value.code == code

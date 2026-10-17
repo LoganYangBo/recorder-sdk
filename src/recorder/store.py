@@ -61,6 +61,21 @@ MIGRATIONS = [
     """
     ALTER TABLE recordings ADD COLUMN title TEXT;
     """,
+    """
+    ALTER TABLE words ADD COLUMN original TEXT;
+    CREATE TABLE corrections (
+        id            INTEGER PRIMARY KEY,
+        recording_id  INTEGER REFERENCES recordings(id) ON DELETE SET NULL,
+        word_id       INTEGER,  -- may outlive the word (e.g. after --reprocess)
+        heard         TEXT NOT NULL,
+        chosen        TEXT NOT NULL,
+        start         REAL NOT NULL,
+        end           REAL NOT NULL,
+        speaker       TEXT,
+        sentence      TEXT NOT NULL,  -- the segment's text after the correction
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -226,13 +241,102 @@ class Store:
         segs = {r[0]: Segment(*r[1:]) for r in rows}
         if words:
             for seg_id, *w in self.conn.execute(
-                "SELECT w.segment_id, w.start, w.end, w.word, w.probability "
+                "SELECT w.segment_id, w.start, w.end, w.word, w.probability, w.id, w.original "
                 "FROM words w JOIN segments s ON s.id = w.segment_id "
-                "WHERE s.recording_id = ? ORDER BY w.start",
+                "WHERE s.recording_id = ? ORDER BY w.start, w.id",
                 (recording_id,),
             ):
                 segs[seg_id].words.append(Word(*w))
         return list(segs.values())
+
+    def word_context(self, word_id: int) -> dict | None:
+        """A word with its segment and recording: {word, recording_id,
+        segment_id, segment_start, segment_end, speaker, sentence}."""
+        row = self.conn.execute(
+            "SELECT w.start, w.end, w.word, w.probability, w.id, w.original, "
+            "       s.recording_id, s.id, s.start, s.end, s.speaker, s.text "
+            "FROM words w JOIN segments s ON s.id = w.segment_id WHERE w.id = ?",
+            (word_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        keys = ("recording_id", "segment_id", "segment_start", "segment_end", "speaker", "sentence")
+        return {"word": Word(*row[:6]), **dict(zip(keys, row[6:]))}
+
+    def correct_word(self, word_id: int, chosen: str) -> dict:
+        """Replace a word with what the user says was meant (or confirm it, if
+        `chosen` is the same word), rebuild its segment's text, and log it in
+        `corrections`. Returns the correction as a dict."""
+        from .learn import normalize, recase
+
+        ctx = self.word_context(word_id)
+        if ctx is None:
+            raise KeyError(f"no word {word_id}")
+        w = ctx["word"]
+        heard = w.original if w.original is not None else w.word
+        new = recase(chosen.strip(), w.word) if normalize(chosen) != normalize(w.word) else w.word
+        with self.conn:
+            self.conn.execute(
+                "UPDATE words SET word = ?, original = ? WHERE id = ?", (new, heard, word_id)
+            )
+            words = [
+                r[0]
+                for r in self.conn.execute(
+                    "SELECT word FROM words WHERE segment_id = ? ORDER BY start, id",
+                    (ctx["segment_id"],),
+                )
+            ]
+            sentence = " ".join(words)
+            self.conn.execute(
+                "UPDATE segments SET text = ? WHERE id = ?", (sentence, ctx["segment_id"])
+            )
+            # one entry per word: choosing again replaces the earlier choice
+            self.conn.execute("DELETE FROM corrections WHERE word_id = ?", (word_id,))
+            cur = self.conn.execute(
+                "INSERT INTO corrections "
+                "(recording_id, word_id, heard, chosen, start, end, speaker, sentence) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    ctx["recording_id"],
+                    word_id,
+                    normalize(heard),
+                    normalize(chosen),
+                    w.start,
+                    w.end,
+                    ctx["speaker"],
+                    sentence,
+                ),
+            )
+        return self.corrections(cur.lastrowid)[0]
+
+    def corrections(self, correction_id: int | None = None) -> list[dict]:
+        """The correction log, newest first (or one entry)."""
+        where, args = ("WHERE c.id = ?", (correction_id,)) if correction_id else ("", ())
+        rows = self.conn.execute(
+            "SELECT c.id, c.recording_id, c.word_id, c.heard, c.chosen, c.start, c.end, "
+            "       c.speaker, c.sentence, c.created_at, r.title, r.path "
+            f"FROM corrections c LEFT JOIN recordings r ON r.id = c.recording_id {where} "
+            "ORDER BY c.id DESC",
+            args,
+        ).fetchall()
+        keys = (
+            "id",
+            "recording_id",
+            "word_id",
+            "heard",
+            "chosen",
+            "start",
+            "end",
+            "speaker",
+            "sentence",
+            "created_at",
+        )
+        out = []
+        for r in rows:
+            d = dict(zip(keys, r[:10]))
+            d["recording"] = r[10] or (Path(r[11]).name if r[11] else None)
+            out.append(d)
+        return out
 
     def set_speakers(self, recording_id: int, segments: list[Segment]) -> None:
         """Update speaker labels of a recording's segments, given in `segments()` order."""

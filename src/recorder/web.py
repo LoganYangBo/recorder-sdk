@@ -75,8 +75,37 @@ def _seg_json(n: int, s) -> dict:
         "score": s.speaker_score,
         "match": s.speaker_match,
         "logprob": s.avg_logprob,
-        "words": [[w.word, w.start, w.end, w.probability] for w in s.words],
+        # [word, start, end, probability, id, original (if corrected/confirmed)]
+        "words": [[w.word, w.start, w.end, w.probability, w.id, w.original] for w in s.words],
     }
+
+
+DICTIONARY_API = "https://api.dictionaryapi.dev/api/v2/entries/en/"
+
+
+def fetch_pronunciation(word: str) -> bytes | None:
+    """A human recording of `word` (US if there is one) from the free
+    dictionaryapi.dev (Wiktionary audio), or None."""
+    import urllib.error
+    import urllib.request
+    from urllib.parse import quote
+
+    try:
+        with urllib.request.urlopen(DICTIONARY_API + quote(word), timeout=6) as r:
+            entries = json.loads(r.read())
+        urls = [
+            ph["audio"]
+            for e in entries
+            for ph in e.get("phonetics", [])
+            if ph.get("audio", "").startswith("http")
+        ]
+        if not urls:
+            return None
+        urls.sort(key=lambda u: (not u.endswith("-us.mp3"), u))
+        with urllib.request.urlopen(urls[0], timeout=10) as r:
+            return r.read()
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
 
 
 class App:
@@ -94,8 +123,12 @@ class App:
         transcriber=None,
         library: str | Path | None = None,
         whisper: dict | None = None,
+        pronouncer=fetch_pronunciation,
     ):
         self.db = str(db)
+        self.pronouncer = pronouncer
+        self._audio_cache: tuple[str, object] | None = None  # (path, samples) of the last file
+        self._no_pronunciation: set[str] = set()
         self.device = device
         self.library = Path(library) if library else Path(db).resolve().parent / "recordings"
         self.whisper = whisper or {}
@@ -343,6 +376,120 @@ class App:
             rid = session.save(store, self.library, params)
         return {"recording": rid, "committed": committed}
 
+    # ---- unsure words: candidates, corrections, pronunciation ----
+
+    def _recording_audio(self, path: str):
+        from .speaker import load_audio
+
+        if self._audio_cache is None or self._audio_cache[0] != path:
+            self._audio_cache = (path, load_audio(path))
+        return self._audio_cache[1]
+
+    def word_candidates(self, q, body, wid: int):
+        from . import learn
+
+        with self.store() as store:
+            ctx = store.word_context(wid)
+            if ctx is None:
+                raise ApiError(404, f"no word {wid}")
+            rec = store.recording(ctx["recording_id"])
+        w = ctx["word"]
+        heard = w.original if w.original is not None else w.word
+        alts, rank = [], None
+        with self.model_lock:
+            try:
+                audio = self._recording_audio(rec.path)
+                t0 = ctx["segment_start"]
+                clip = audio[int(t0 * 16000) : int(ctx["segment_end"] * 16000)]
+                tr = self.transcriber()
+                alts = tr.alternatives(clip, w.start - t0, w.end - t0, language=rec.language)
+                rank = tr.word_rank
+            except FileNotFoundError as e:
+                raise ApiError(400, f"audio file not found: {e.filename}") from e
+            cands = learn.candidates(heard, alts, rank)
+        return {
+            "id": wid,
+            "word": w.word,
+            "heard": learn.normalize(heard),
+            "probability": w.probability,
+            "corrected": w.original is not None,
+            "speaker": ctx["speaker"],
+            "heard_ipa": learn.ipa(heard),
+            "candidates": [{"word": c, "ipa": learn.ipa(c)} for c in cands],
+        }
+
+    def word_correct(self, q, body, wid: int):
+        from . import learn
+
+        chosen = learn.normalize(str(body.get("word", "")))
+        if not chosen:
+            raise ApiError(400, "empty word")
+        with self.store() as store:
+            try:
+                c = store.correct_word(wid, chosen)
+            except KeyError as e:
+                raise ApiError(404, str(e)) from e
+            word = store.word_context(wid)["word"].word  # as shown, e.g. "Think,"
+        return {**c, "word": word, "compare": learn.compare(c["chosen"], c["heard"])}
+
+    def word_compare(self, q, body):
+        from . import learn
+
+        target, heard = q.get("target", [""])[0], q.get("heard", [""])[0]
+        return learn.compare(target, heard)
+
+    def correction_list(self, q, body):
+        from . import learn
+
+        with self.store() as store:
+            rows = [c for c in store.corrections() if c["heard"] != c["chosen"]]
+        return [{**c, "compare": learn.compare(c["chosen"], c["heard"])} for c in rows]
+
+    def corrections_markdown(self) -> bytes:
+        from . import learn
+
+        with self.store() as store:
+            rows = [c for c in store.corrections() if c["heard"] != c["chosen"]]
+        lines = [
+            "# 纠错本",
+            "",
+            "| 时间 | 应为 | 听成 | 音标 | 句子 | 录音 |",
+            "|---|---|---|---|---|---|",
+        ]
+        for c in rows:
+            cmp = learn.compare(c["chosen"], c["heard"])
+            sounds = f"/{cmp['target_ipa']}/ → /{cmp['heard_ipa']}/" if cmp["target_ipa"] else ""
+            m, sec = divmod(int(c["start"]), 60)
+            cells = [
+                c["created_at"],
+                c["chosen"],
+                c["heard"],
+                sounds,
+                c["sentence"],
+                f"{c['recording'] or '(已删除)'} @ {m}:{sec:02d}",
+            ]
+            lines.append("| " + " | ".join(x.replace("|", "\\|") for x in cells) + " |")
+        return ("\n".join(lines) + "\n").encode()
+
+    def pronunciation(self, word: str) -> bytes:
+        from . import learn
+
+        word = learn.normalize(word)
+        if not word or not re.fullmatch(r"[a-z']+", word):
+            raise ApiError(400, "not a word")
+        cache = self.library.parent / "pronunciations" / f"{word}.mp3"
+        if cache.is_file():
+            return cache.read_bytes()
+        if word in self._no_pronunciation:
+            raise ApiError(404, f"no recording of '{word}'")
+        data = self.pronouncer(word)
+        if not data:
+            self._no_pronunciation.add(word)
+            raise ApiError(404, f"no recording of '{word}'")
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(data)
+        return data
+
     def audio_path(self, rid: int) -> Path:
         with self.store() as store:
             rec = store.recording(rid)
@@ -369,6 +516,10 @@ ROUTES = [  # (method, path, handler, raw body)
     ("POST", r"/api/speakers/enroll", "enroll"),
     ("DELETE", r"/api/speakers/([^/]+)", "forget"),
     ("POST", r"/api/relabel", "relabel"),
+    ("GET", r"/api/words/(\d+)/candidates", "word_candidates"),
+    ("POST", r"/api/words/(\d+)/correct", "word_correct"),
+    ("GET", r"/api/compare", "word_compare"),
+    ("GET", r"/api/corrections", "correction_list"),
 ]
 
 
@@ -395,6 +546,18 @@ def make_handler(app: App):
             if self.command == "GET" and url.path in ("/", "/index.html"):
                 html = resources.files("recorder").joinpath("web.html").read_bytes()
                 return self._send(200, html, "text/html; charset=utf-8")
+            if self.command == "GET" and url.path == "/api/corrections.md":
+                return self._send(
+                    200,
+                    app.corrections_markdown(),
+                    "text/markdown; charset=utf-8",
+                    {"Content-Disposition": "attachment; filename=corrections.md"},
+                )
+            if self.command == "GET" and url.path == "/api/pronounce":
+                word = parse_qs(url.query).get("word", [""])[0]
+                return self._send(
+                    200, app.pronunciation(word), "audio/mpeg", {"Cache-Control": "max-age=86400"}
+                )
             m = re.fullmatch(r"/api/recordings/(\d+)/audio", url.path)
             if self.command in ("GET", "HEAD") and m:
                 return self._audio(app.audio_path(int(m.group(1))))
