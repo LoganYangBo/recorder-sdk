@@ -348,7 +348,9 @@ class App:
     def _import(self, job: dict, path: Path, threshold: float) -> None:
         with self.model_lock, self.store() as store:
             labeler = self._labeler(store, threshold)
-            r = Pipeline(self.transcriber(), store, labeler).process_file(path)
+            from .sync import started_at_of
+
+            r = Pipeline(self.transcriber(), store, labeler).process_file(path, started_at_of(path))
             if r.skipped:  # same audio was imported before: drop the copy
                 path.unlink(missing_ok=True)
                 job["name"] = store.recording(r.recording_id).name

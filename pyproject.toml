@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "recorder"
-version = "0.1.0"
+version = "0.3.0"
 description = "Transcription pipeline SDK for an all-day wearable recorder"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["numpy"]
 
 [project.optional-dependencies]
 # hotwords needs faster-whisper 1.1+. av 19 removed open(metadata_errors=...), which faster-whisper 1.2.1 still passes
@@ -22,7 +22,7 @@ speaker = ["speechbrain>=1.0", "torchaudio>=2.1", "faster-whisper>=1.1", "av>=11
 learn = ["cmudict>=1.0"]
 # synthesised standard pronunciations: American female / male voices (Kokoro, ONNX)
 tts = ["kokoro-onnx>=0.4"]
-dev = ["pytest>=8", "cmudict>=1.0"]
+dev = ["pytest>=8", "ruff", "cmudict>=1.0", "av>=11,<19"]
 
 [project.scripts]
 recorder = "recorder.cli:main"
@@ -35,3 +35,9 @@ recorder = ["web.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F"]

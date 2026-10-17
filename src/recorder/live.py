@@ -131,4 +131,9 @@ class LiveSession:
             self.committed,
             params={**(params or {}), "live": True},
         )
-        return store.save(path, digest, t, started_at=self.started_at.isoformat(timespec="seconds"))
+        return store.save(
+            path,
+            digest,
+            t,
+            started_at=self.started_at.replace(tzinfo=None).isoformat(timespec="seconds"),
+        )

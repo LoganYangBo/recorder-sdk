@@ -84,6 +84,37 @@ MIGRATIONS = [
     -- word times: 0 = Whisper's, 1 = forced-aligned, -1 = alignment tried, kept Whisper's
     ALTER TABLE words ADD COLUMN aligned INTEGER NOT NULL DEFAULT 0;
     """,
+    """
+    -- full-text search over segment text; trigram matches any substring of 3+ characters,
+    -- so it works for English and Chinese alike
+    CREATE VIRTUAL TABLE segments_fts USING fts5(
+        text, content='segments', content_rowid='id', tokenize='trigram'
+    );
+    CREATE TRIGGER segments_fts_insert AFTER INSERT ON segments BEGIN
+        INSERT INTO segments_fts(rowid, text) VALUES (new.id, new.text);
+    END;
+    CREATE TRIGGER segments_fts_delete AFTER DELETE ON segments BEGIN
+        INSERT INTO segments_fts(segments_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    END;
+    CREATE TRIGGER segments_fts_update AFTER UPDATE OF text ON segments BEGIN
+        INSERT INTO segments_fts(segments_fts, rowid, text) VALUES ('delete', old.id, old.text);
+        INSERT INTO segments_fts(rowid, text) VALUES (new.id, new.text);
+    END;
+    INSERT INTO segments_fts(segments_fts) VALUES ('rebuild');
+    CREATE INDEX idx_recordings_started ON recordings(started_at);
+    -- every audio file seen by sync, by content hash, so failures are kept and retried
+    CREATE TABLE files (
+        sha256        TEXT PRIMARY KEY,
+        source        TEXT NOT NULL,   -- where it was found (e.g. on the device)
+        path          TEXT,            -- its copy in the library
+        started_at    TEXT,
+        status        TEXT NOT NULL,   -- pending / done / failed
+        error         TEXT,
+        attempts      INTEGER NOT NULL DEFAULT 0,
+        recording_id  INTEGER REFERENCES recordings(id) ON DELETE SET NULL,
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -92,6 +123,12 @@ _SEG_COLS = (
     "s.start, s.end, s.text, s.speaker, s.avg_logprob, s.no_speech_prob, "
     "s.speaker_score, s.speaker_match"
 )
+
+
+_FILE_KEYS = (
+    "sha256", "source", "path", "started_at", "status", "error", "attempts", "recording_id",
+    "updated_at",
+)  # fmt: skip
 
 
 def _rec(row) -> Recording:
@@ -226,6 +263,12 @@ class Store:
         with self.conn:
             cur = self.conn.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
         return cur.rowcount > 0
+
+    def set_started_at(self, recording_id: int, started_at: str | None) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE recordings SET started_at = ? WHERE id = ?", (started_at, recording_id)
+            )
 
     def rename(self, recording_id: int, title: str | None) -> bool:
         """Set a recording's display name; empty or None goes back to the file name."""
@@ -466,11 +509,83 @@ class Store:
         ).fetchone()
         return (row[0], row[1]) if row else None
 
-    def search(self, query: str, limit: int = 50) -> list[tuple[Recording, Segment]]:
+    def search(
+        self,
+        query: str,
+        limit: int = 50,
+        speaker: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[tuple[Recording, Segment]]:
+        """Segments containing `query` (case-insensitive substring; several
+        words separated by spaces must all appear), optionally only `speaker`'s
+        and only in recordings that started in [since, until) (ISO 8601).
+        Ordered by time."""
+        terms = query.split()
+        where, args = [], []
+        long_terms = [t for t in terms if len(t) >= 3]  # what the trigram index can match
+        if long_terms:
+            where.append("s.id IN (SELECT rowid FROM segments_fts WHERE segments_fts MATCH ?)")
+            args.append(" AND ".join('"' + t.replace('"', '""') + '"' for t in long_terms))
+        for t in terms:
+            if len(t) < 3:
+                where.append("s.text LIKE ? ESCAPE '\\'")
+                args.append(
+                    "%" + t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                )
+        if speaker is not None:
+            where.append("s.speaker = ?")
+            args.append(speaker)
+        if since is not None:
+            where.append("r.started_at >= ?")
+            args.append(since)
+        if until is not None:
+            where.append("r.started_at < ?")
+            args.append(until)
         rows = self.conn.execute(
             f"SELECT {_REC_COLS}, {_SEG_COLS} "
             "FROM segments s JOIN recordings r ON r.id = s.recording_id "
-            "WHERE s.text LIKE ? ORDER BY r.id, s.start LIMIT ?",
-            (f"%{query}%", limit),
+            f"WHERE {' AND '.join(where) or '1'} "
+            "ORDER BY r.started_at IS NULL, r.started_at, r.id, s.start LIMIT ?",
+            (*args, limit),
         ).fetchall()
         return [(_rec(r[:8]), Segment(*r[8:])) for r in rows]
+
+    # ---- files seen by sync ----
+
+    def file_status(self, sha256: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT sha256, source, path, started_at, status, error, attempts, recording_id, "
+            "updated_at FROM files WHERE sha256 = ?",
+            (sha256,),
+        ).fetchone()
+        return dict(zip(_FILE_KEYS, row)) if row else None
+
+    def set_file_status(self, sha256: str, source: str, status: str, **fields) -> None:
+        """Insert or update a file's sync record. `fields`: path, started_at,
+        error, recording_id; a failure also counts an attempt."""
+        allowed = {"path", "started_at", "error", "recording_id"}
+        assert set(fields) <= allowed, fields
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO files (sha256, source, status) VALUES (?, ?, ?) "
+                "ON CONFLICT(sha256) DO UPDATE SET source = excluded.source, "
+                "status = excluded.status, updated_at = datetime('now')",
+                (sha256, source, status),
+            )
+            for key, value in fields.items():
+                self.conn.execute(f"UPDATE files SET {key} = ? WHERE sha256 = ?", (value, sha256))
+            if status == "failed":
+                self.conn.execute(
+                    "UPDATE files SET attempts = attempts + 1 WHERE sha256 = ?", (sha256,)
+                )
+            elif status == "done":
+                self.conn.execute("UPDATE files SET error = NULL WHERE sha256 = ?", (sha256,))
+
+    def files(self, status: str | None = None) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT sha256, source, path, started_at, status, error, attempts, recording_id, "
+            "updated_at FROM files " + ("WHERE status = ? " if status else "") + "ORDER BY rowid",
+            (status,) if status else (),
+        ).fetchall()
+        return [dict(zip(_FILE_KEYS, r)) for r in rows]
