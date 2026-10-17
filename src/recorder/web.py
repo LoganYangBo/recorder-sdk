@@ -124,8 +124,11 @@ class App:
         library: str | Path | None = None,
         whisper: dict | None = None,
         pronouncer=fetch_pronunciation,
+        aligner=None,
     ):
         self.db = str(db)
+        # forced aligner for precise word times: an object, "auto" (load on first use), or None
+        self._aligner = aligner
         self.pronouncer = pronouncer
         self._audio_cache: tuple[str, object] | None = None  # (path, samples) of the last file
         self._no_pronunciation: set[str] = set()
@@ -158,6 +161,19 @@ class App:
 
             self._transcriber = WhisperTranscriber(device=self.device, **self.whisper)
         return self._transcriber
+
+    def aligner(self):
+        """The word aligner, or None if off or it can't be loaded (e.g. no
+        torchaudio, or the model download failed)."""
+        if self._aligner == "auto":
+            try:
+                from .align import WordAligner
+
+                self._aligner = WordAligner(device=self.device)
+            except Exception as e:
+                print(f"word alignment off: {type(e).__name__}: {e}")
+                self._aligner = None
+        return self._aligner
 
     def _labeler(self, store: Store, threshold: float):
         try:
@@ -344,22 +360,26 @@ class App:
         if there are none left to do)."""
         with self.store() as store:
             rec = store.recording(rid)
-            if rec is None or not store.unsure_words(rid):
+            if rec is None or not store.unsure_words(rid, align=self._aligner is not None):
                 return None
 
         def run(job):
             def progress(done, total):
                 job["progress"] = [done, total]
 
+            with self.model_lock:
+                aligner = self.aligner()
             with self.store() as store:
-                ops.suggest_words(store, self.transcriber(), rid, self.model_lock, progress)
+                ops.suggest_words(
+                    store, self.transcriber(), rid, self.model_lock, progress, aligner
+                )
 
         return self._enqueue("suggest", rec.name, run, recording=rid)
 
     def suggest_pending(self) -> list[dict]:
         """Queue every recording that still has unsure words not analysed."""
         with self.store() as store:
-            pending = store.pending_unsure()
+            pending = store.pending_unsure(align=self._aligner is not None)
         return [job for rid in pending if (job := self.suggest(rid))]
 
     def job_list(self, q, body):
@@ -454,6 +474,39 @@ class App:
             "heard_ipa": learn.ipa(heard),
             "candidates": [{"word": c, "ipa": learn.ipa(c)} for c in cands],
         }
+
+    def word_clip(self, wid: int, pad: float = 0.05) -> bytes:
+        """Just this word's audio, as a WAV, cut at its (aligned) times with
+        short fades; exact, unlike seeking in the compressed recording."""
+        import io
+        import wave
+
+        import numpy as np
+
+        with self.store() as store:
+            ctx = store.word_context(wid)
+            if ctx is None:
+                raise ApiError(404, f"no word {wid}")
+            path = store.recording(ctx["recording_id"]).path
+        w = ctx["word"]
+        with self.model_lock:  # the audio cache is shared
+            try:
+                audio = self._recording_audio(path)
+            except FileNotFoundError as e:
+                raise ApiError(400, f"audio file not found: {e.filename}") from e
+        clip = audio[max(0, int((w.start - pad) * 16000)) : int((w.end + pad) * 16000)].copy()
+        fade = min(160, len(clip) // 2)  # 10 ms
+        if fade:
+            ramp = np.linspace(0, 1, fade, dtype=np.float32)
+            clip[:fade] *= ramp
+            clip[-fade:] *= ramp[::-1]
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)
+            f.setframerate(16000)
+            f.writeframes((np.clip(clip, -1, 1) * 32767).astype("<i2").tobytes())
+        return buf.getvalue()
 
     def word_correct(self, q, body, wid: int):
         from . import learn
@@ -595,6 +648,9 @@ def make_handler(app: App):
                 return self._send(
                     200, app.pronunciation(word), "audio/mpeg", {"Cache-Control": "max-age=86400"}
                 )
+            m = re.fullmatch(r"/api/words/(\d+)/clip.wav", url.path)
+            if self.command == "GET" and m:
+                return self._send(200, app.word_clip(int(m.group(1))), "audio/wav")
             m = re.fullmatch(r"/api/recordings/(\d+)/audio", url.path)
             if self.command in ("GET", "HEAD") and m:
                 return self._audio(app.audio_path(int(m.group(1))))
@@ -660,7 +716,10 @@ def serve(
     library: str | Path | None = None,
     whisper: dict | None = None,
 ) -> None:
-    app = App(db, device=device, library=library, whisper=whisper)
+    from importlib.util import find_spec
+
+    aligner = "auto" if find_spec("torchaudio") else None
+    app = App(db, device=device, library=library, whisper=whisper, aligner=aligner)
     Store(db).close()  # create / migrate the database before the first request
     if app.suggest_pending():
         print("working out suggestions for unsure words in the background")

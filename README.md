@@ -75,6 +75,10 @@ recorder ui                           # opens http://127.0.0.1:8765 in your brow
   a live recording, and on `recorder ui` start for older recordings) and stored, so the
   popup opens instantly. The CLI does the same after `recorder transcribe` (skip with
   `--no-suggest`); `recorder suggest [IDS]` catches up on older recordings.
+  The same pass force-aligns those sentences (torchaudio's MMS_FA wav2vec2 model, ~1.2 GB
+  downloaded on first use, comes with the `speaker` extra) for word times accurate to
+  ~20 ms instead of Whisper's 0.1-0.3 s; "▶ 录音原声" plays just that word, cut on the
+  server.
 - 纠错本: every corrected word, with the intended word's IPA against what Whisper heard and
   the sounds that differ (e.g. /θ/ said as /s/), the standard pronunciation (a human
   recording from Wiktionary via dictionaryapi.dev, cached; the browser's own voice when

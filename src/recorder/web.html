@@ -655,9 +655,7 @@ async function openWordPop(el, repick = false) {
   try { info = await api(`/api/words/${wid}/candidates`); }
   catch (e) { pop.innerHTML = `<div class="muted">出错：${esc(e.message)}</div>`; return; }
   if (!pop) return;
-  const seg = state.segs.find(s => s.words.some(w => w[4] === wid));
-  const word = seg.words.find(w => w[4] === wid);
-  const clip = { start: word[1], end: word[2] };
+  const clip = { wid };
   if (!repick && info.corrected && norm(info.word) !== info.heard) {
     showCompare(el, { chosen: norm(info.word), heard: info.heard, compare: await api(`/api/compare?target=${encodeURIComponent(norm(info.word))}&heard=${encodeURIComponent(info.heard)}`) }, clip);
     return;
@@ -739,26 +737,16 @@ function showCompare(el, c, clip) {
 
 function bindPlay(clip, root = pop) {
   root.querySelectorAll("[data-say]").forEach(b => b.onclick = () => sayWord(b.dataset.say));
-  root.querySelectorAll("[data-clip]").forEach(b => b.onclick = () => playClip(clip.start, clip.end, b.dataset.rec));
+  root.querySelectorAll("[data-clip]").forEach(b => b.onclick = () => playWord(clip.wid));
 }
 
-let clipStop;
-async function playClip(start, end, rec) {
-  let a = $("#audio");
-  if (rec && (!a || !state.rec || state.rec.id !== +rec)) {
-    // not the open recording (e.g. from the notebook): use a separate player
-    a = playClip.el || (playClip.el = new Audio());
-    const src = `/api/recordings/${rec}/audio`;
-    if (!a.src.endsWith(src)) {
-      a.src = src;
-      await new Promise(ok => a.addEventListener("loadedmetadata", ok, { once: true }));
-    }
-  }
-  if (!a) return;
-  clearInterval(clipStop);
-  a.currentTime = Math.max(0, start - 0.15);
-  a.play().catch(() => {});
-  clipStop = setInterval(() => { if (a.currentTime >= end + 0.15) { a.pause(); clearInterval(clipStop); } }, 30);
+// the word's own audio, cut on the server at its (aligned) times: exact, unlike
+// seeking the compressed recording and stopping it on a timer
+const wordAudio = new Audio();
+async function playWord(wid) {
+  $("#audio")?.pause();
+  wordAudio.src = `/api/words/${wid}/clip.wav?v=${Date.now()}`;  // times can change after alignment
+  try { await wordAudio.play(); } catch { toast("这段原声放不了（录音文件可能不在了）"); }
 }
 
 const sayAudio = new Audio();
@@ -794,14 +782,14 @@ async function showNotes() {
           ${d && d.why.length ? `<span class="muted">· ${esc(d.why.join("；"))}</span>` : ""}</div>
         <div class="btns">
           <button class="play" data-say="${esc(c.chosen)}">▶ 标准</button>
-          ${c.recording_id ? `<button class="play" data-clip data-start="${c.start}" data-end="${c.end}" data-rec="${c.recording_id}">▶ 原声</button>
+          ${c.recording_id ? `<button class="play" data-word="${c.word_id}">▶ 原声</button>
           <button class="link" data-goto="${c.recording_id}" data-t="${c.start}">去原文</button>` : ""}
         </div>
         <div class="meta">${esc(c.sentence)} · ${esc(c.recording || "（录音已删除）")} ${fmt(c.start)} · ${esc(c.speaker || "")} · ${esc(c.created_at)}</div>
       </div>`;
     }).join("") : `<div class="empty">还没有纠错记录。在转写里点橙色下划线的词，选出正确的词就会记到这里。</div>`}</div>`;
   $("#main").querySelectorAll("[data-say]").forEach(b => b.onclick = () => sayWord(b.dataset.say));
-  $("#main").querySelectorAll("[data-clip]").forEach(b => b.onclick = () => playClip(+b.dataset.start, +b.dataset.end, b.dataset.rec));
+  $("#main").querySelectorAll("[data-word]").forEach(b => b.onclick = () => playWord(+b.dataset.word));
   $("#main").querySelectorAll("[data-goto]").forEach(b => b.onclick = e => { e.stopPropagation(); openRec(+b.dataset.goto, +b.dataset.t); });
 }
 

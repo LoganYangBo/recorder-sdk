@@ -363,3 +363,14 @@ def test_unsure_words_are_analysed_in_one_go(tmp_path, monkeypatch):
         assert store.candidates(ids[1])[0] == "think" and store.candidates(ids[2])[0] == "sew"
         assert store.pending_unsure() == {}
     assert app.suggest_pending() == []  # nothing left to do
+
+
+def test_word_clip_is_cut_exactly(server):
+    import io
+    import wave
+
+    wid = jcall(server, "/api/recordings/1/segments")[0]["words"][1][4]  # "Logan", 1-2 s
+    status, headers, body = call(server, f"/api/words/{wid}/clip.wav")
+    assert status == 200 and headers["Content-Type"] == "audio/wav"
+    with wave.open(io.BytesIO(body)) as f:
+        assert f.getframerate() == SR and f.getnframes() == int(1.1 * SR)  # 1 s + 0.05 s each side

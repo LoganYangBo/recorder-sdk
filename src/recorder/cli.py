@@ -85,6 +85,7 @@ def cmd_transcribe(args) -> None:
         initial_prompt=args.prompt,
         hotwords=args.hotwords,
     )
+    aligner = None if args.no_suggest else _aligner(args.device)
     with Store(args.db) as store:
         labeler = None if args.no_speakers else _voiceprint_labeler(store, args)
         pipe = Pipeline(transcriber, store, labeler, reprocess=args.reprocess)
@@ -97,23 +98,35 @@ def cmd_transcribe(args) -> None:
                 )
                 print(f"{r.path}: {status}")
                 if not args.no_suggest:
-                    _suggest(store, transcriber, r.recording_id)
+                    _suggest(store, transcriber, r.recording_id, aligner)
 
 
-def _suggest(store: Store, transcriber, recording_id: int) -> None:
-    n = ops.suggest_words(store, transcriber, recording_id)
+def _aligner(device: str):
+    """Forced aligner for precise word times, or None if unavailable."""
+    try:
+        from .align import WordAligner
+
+        return WordAligner(device=device)
+    except Exception as e:
+        print(f"word alignment off ({type(e).__name__}: {e}); using Whisper's word times")
+        return None
+
+
+def _suggest(store: Store, transcriber, recording_id: int, aligner=None) -> None:
+    n = ops.suggest_words(store, transcriber, recording_id, aligner=aligner)
     if n:
-        print(f"  recording {recording_id}: suggestions for {n} unsure word(s)")
+        print(f"  recording {recording_id}: {n} unsure word(s) aligned and analysed")
 
 
 def cmd_suggest(args) -> None:
     from .transcribe import WhisperTranscriber
 
     transcriber = WhisperTranscriber(model=args.model, device=args.device, language=args.language)
+    aligner = _aligner(args.device)
     with Store(args.db) as store:
-        ids = args.recording_ids or list(store.pending_unsure())
+        ids = args.recording_ids or list(store.pending_unsure(align=aligner is not None))
         for rid in ids:
-            _suggest(store, transcriber, rid)
+            _suggest(store, transcriber, rid, aligner)
         if not ids:
             print("no unsure words left to analyse")
 

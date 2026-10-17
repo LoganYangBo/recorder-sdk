@@ -80,6 +80,10 @@ MIGRATIONS = [
     -- suggested corrections for an unsure word, as a JSON list; NULL = not analysed yet
     ALTER TABLE words ADD COLUMN candidates TEXT;
     """,
+    """
+    -- word times: 0 = Whisper's, 1 = forced-aligned, -1 = alignment tried, kept Whisper's
+    ALTER TABLE words ADD COLUMN aligned INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -267,32 +271,69 @@ class Store:
         keys = ("recording_id", "segment_id", "segment_start", "segment_end", "speaker", "sentence")
         return {"word": Word(*row[:6]), **dict(zip(keys, row[6:]))}
 
+    @staticmethod
+    def _pending(align: bool) -> str:
+        return "(w.candidates IS NULL OR w.aligned = 0)" if align else "w.candidates IS NULL"
+
     def unsure_words(
-        self, recording_id: int, below: float = 0.6, pending: bool = True
-    ) -> list[tuple[float, float, Word]]:
+        self, recording_id: int, below: float = 0.6, pending: bool = True, align: bool = False
+    ) -> list[tuple[int, float, float, Word]]:
         """Words of a recording Whisper was unsure about (probability below
-        `below`), with their segment's start and end; by default only those
-        not analysed yet."""
+        `below`) as (segment_id, segment start, segment end, word); by
+        default only those without candidates yet (or, with `align`, not
+        aligned yet either)."""
         rows = self.conn.execute(
-            "SELECT s.start, s.end, w.start, w.end, w.word, w.probability, w.id, w.original "
+            "SELECT s.id, s.start, s.end, w.start, w.end, w.word, w.probability, w.id, w.original "
             "FROM words w JOIN segments s ON s.id = w.segment_id "
             "WHERE s.recording_id = ? AND w.probability < ? "
-            + ("AND w.candidates IS NULL " if pending else "")
+            + (f"AND {self._pending(align)} " if pending else "")
             + "ORDER BY w.start, w.id",
             (recording_id, below),
         ).fetchall()
-        return [(r[0], r[1], Word(*r[2:])) for r in rows]
+        return [(r[0], r[1], r[2], Word(*r[3:])) for r in rows]
 
-    def pending_unsure(self, below: float = 0.6) -> dict[int, int]:
-        """{recording_id: number of unsure words not analysed yet}."""
+    def pending_unsure(self, below: float = 0.6, align: bool = False) -> dict[int, int]:
+        """{recording_id: number of unsure words still to analyse}."""
         return dict(
             self.conn.execute(
                 "SELECT s.recording_id, COUNT(*) FROM words w "
                 "JOIN segments s ON s.id = w.segment_id "
-                "WHERE w.probability < ? AND w.candidates IS NULL GROUP BY s.recording_id",
+                f"WHERE w.probability < ? AND {self._pending(align)} GROUP BY s.recording_id",
                 (below,),
             ).fetchall()
         )
+
+    def segment_words(self, segment_id: int) -> list[Word]:
+        return [
+            Word(*r)
+            for r in self.conn.execute(
+                "SELECT start, end, word, probability, id, original FROM words "
+                "WHERE segment_id = ? ORDER BY start, id",
+                (segment_id,),
+            )
+        ]
+
+    def segment_aligned(self, segment_id: int) -> bool:
+        """Whether alignment has been tried for every word of a segment."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM words WHERE segment_id = ? AND aligned = 0", (segment_id,)
+        ).fetchone()
+        return row[0] == 0
+
+    def set_word_times(self, times: dict[int, tuple[float, float] | None]) -> None:
+        """Store forced-aligned times ({word_id: (start, end)}); None marks a
+        word as tried but kept at Whisper's times."""
+        with self.conn:
+            for wid, t in times.items():
+                if t is None:
+                    self.conn.execute("UPDATE words SET aligned = -1 WHERE id = ?", (wid,))
+                    continue
+                self.conn.execute(
+                    "UPDATE words SET start = ?, end = ?, aligned = 1 WHERE id = ?", (*t, wid)
+                )
+                self.conn.execute(
+                    "UPDATE corrections SET start = ?, end = ? WHERE word_id = ?", (*t, wid)
+                )
 
     def set_candidates(self, word_id: int, candidates: list[str]) -> None:
         with self.conn:
