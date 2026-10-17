@@ -227,3 +227,36 @@ def test_live_session_over_http(server, tmp_path):
     segs = jcall(server, f"/api/recordings/{stop['recording']}/segments")
     assert [s["start"] for s in segs] == [0.0, 2.0, 4.0]
     assert all(s["speaker"] for s in segs)
+
+
+def test_cli_ui_starts_server(tmp_path, monkeypatch, capsys):
+    from recorder import web
+    from recorder.cli import main
+
+    started = {}
+
+    def fake_serve_forever(self):
+        started["app"] = self.RequestHandlerClass
+        raise KeyboardInterrupt  # what Ctrl+C does
+
+    monkeypatch.setattr(web.ThreadingHTTPServer, "serve_forever", fake_serve_forever)
+    db = tmp_path / "t.db"
+    main(
+        [
+            "--db",
+            str(db),
+            "ui",
+            "--no-open",
+            "--port",
+            "0",
+            "--model",
+            "small",
+            "--hotwords",
+            "Logan",
+            "--library",
+            str(tmp_path / "lib"),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "recorder UI on http://127.0.0.1:" in out and str(tmp_path / "lib") in out
+    assert started and db.exists()

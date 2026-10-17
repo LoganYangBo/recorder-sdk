@@ -434,8 +434,10 @@ def serve(
     port: int = 8765,
     device: str = "auto",
     open_browser: bool = True,
+    library: str | Path | None = None,
+    whisper: dict | None = None,
 ) -> None:
-    app = App(db, device=device)
+    app = App(db, device=device, library=library, whisper=whisper)
     Store(db).close()  # create / migrate the database before the first request
     server = ThreadingHTTPServer((host, port), make_handler(app))
     url = f"http://{host}:{server.server_address[1]}/"
