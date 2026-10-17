@@ -76,6 +76,10 @@ MIGRATIONS = [
         created_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
     """,
+    """
+    -- suggested corrections for an unsure word, as a JSON list; NULL = not analysed yet
+    ALTER TABLE words ADD COLUMN candidates TEXT;
+    """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -262,6 +266,43 @@ class Store:
             return None
         keys = ("recording_id", "segment_id", "segment_start", "segment_end", "speaker", "sentence")
         return {"word": Word(*row[:6]), **dict(zip(keys, row[6:]))}
+
+    def unsure_words(
+        self, recording_id: int, below: float = 0.6, pending: bool = True
+    ) -> list[tuple[float, float, Word]]:
+        """Words of a recording Whisper was unsure about (probability below
+        `below`), with their segment's start and end; by default only those
+        not analysed yet."""
+        rows = self.conn.execute(
+            "SELECT s.start, s.end, w.start, w.end, w.word, w.probability, w.id, w.original "
+            "FROM words w JOIN segments s ON s.id = w.segment_id "
+            "WHERE s.recording_id = ? AND w.probability < ? "
+            + ("AND w.candidates IS NULL " if pending else "")
+            + "ORDER BY w.start, w.id",
+            (recording_id, below),
+        ).fetchall()
+        return [(r[0], r[1], Word(*r[2:])) for r in rows]
+
+    def pending_unsure(self, below: float = 0.6) -> dict[int, int]:
+        """{recording_id: number of unsure words not analysed yet}."""
+        return dict(
+            self.conn.execute(
+                "SELECT s.recording_id, COUNT(*) FROM words w "
+                "JOIN segments s ON s.id = w.segment_id "
+                "WHERE w.probability < ? AND w.candidates IS NULL GROUP BY s.recording_id",
+                (below,),
+            ).fetchall()
+        )
+
+    def set_candidates(self, word_id: int, candidates: list[str]) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE words SET candidates = ? WHERE id = ?", (json.dumps(candidates), word_id)
+            )
+
+    def candidates(self, word_id: int) -> list[str] | None:
+        row = self.conn.execute("SELECT candidates FROM words WHERE id = ?", (word_id,)).fetchone()
+        return json.loads(row[0]) if row and row[0] is not None else None
 
     def correct_word(self, word_id: int, chosen: str) -> dict:
         """Replace a word with what the user says was meant (or confirm it, if

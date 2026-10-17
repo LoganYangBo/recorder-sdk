@@ -127,17 +127,17 @@ class WhisperTranscriber:
     def alternatives(
         self,
         audio: np.ndarray,
-        start: float,
-        end: float,
+        spans: list[tuple[float, float]],
         language: str | None = None,
         temperatures: tuple[float, ...] = (0.4, 0.7, 1.0, 1.0, 1.2),
-    ) -> list[str]:
-        """Other words Whisper might hear between `start` and `end` (seconds)
+    ) -> list[list[str]]:
+        """Other words Whisper might hear in each (start, end) span (seconds)
         of `audio` (16 kHz samples, typically one segment): re-decodes it with
-        sampling at each temperature and collects the words overlapping that
-        span. May repeat words; the more often, the likelier."""
+        sampling at each temperature and collects, per span, the words that
+        overlap it. Words may repeat; the more often, the likelier. One pass
+        over the audio serves every span in it."""
         model = self._load()
-        out = []
+        out: list[list[str]] = [[] for _ in spans]
         for t in temperatures:
             segments, _ = model.transcribe(
                 audio,
@@ -153,8 +153,9 @@ class WhisperTranscriber:
             )
             for seg in segments:
                 for w in seg.words or []:
-                    if min(w.end, end) - max(w.start, start) > 0.3 * (end - start):
-                        out.append(w.word.strip())
+                    for found, (start, end) in zip(out, spans):
+                        if min(w.end, end) - max(w.start, start) > 0.3 * (end - start):
+                            found.append(w.word.strip())
         return out
 
     def word_rank(self, word: str) -> int | None:

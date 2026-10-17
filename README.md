@@ -71,6 +71,10 @@ recorder ui                           # opens http://127.0.0.1:8765 in your brow
   (Whisper re-decoding that spot at higher temperature, plus dictionary words one or two
   sounds away), each with its IPA. Pick one, type another, or confirm the original. The
   transcript is fixed in place and the pick is logged.
+  Suggestions are worked out once per recording in the background (after an import, after
+  a live recording, and on `recorder ui` start for older recordings) and stored, so the
+  popup opens instantly. The CLI does the same after `recorder transcribe` (skip with
+  `--no-suggest`); `recorder suggest [IDS]` catches up on older recordings.
 - 纠错本: every corrected word, with the intended word's IPA against what Whisper heard and
   the sounds that differ (e.g. /θ/ said as /s/), the standard pronunciation (a human
   recording from Wiktionary via dictionaryapi.dev, cached; the browser's own voice when

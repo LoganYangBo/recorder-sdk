@@ -299,15 +299,20 @@ class App:
             path = self.library / f"{stem}-{i}{suffix}"
         body.copy_to(path)
         threshold = float(q.get("threshold", ["0.3"])[0])
+        return self._enqueue("import", path.name, lambda job: self._import(job, path, threshold))
+
+    def _enqueue(self, kind: str, name: str, run, recording: int | None = None) -> dict:
         job = {
             "id": next(self._job_ids),
-            "name": path.name,
+            "kind": kind,
+            "name": name,
             "status": "queued",
-            "recording": None,
+            "recording": recording,
+            "progress": None,
             "error": None,
         }
         self.jobs[job["id"]] = job
-        self._queue.put((job, path, threshold))
+        self._queue.put((job, run))
         if self._worker is None:
             self._worker = threading.Thread(target=self._work, daemon=True)
             self._worker.start()
@@ -315,18 +320,47 @@ class App:
 
     def _work(self):
         while True:
-            job, path, threshold = self._queue.get()
+            job, run = self._queue.get()
             job["status"] = "running"
             try:
-                with self.model_lock, self.store() as store:
-                    labeler = self._labeler(store, threshold)
-                    r = Pipeline(self.transcriber(), store, labeler).process_file(path)
-                    if r.skipped:  # same audio was imported before: drop the copy
-                        path.unlink(missing_ok=True)
-                        job["name"] = store.recording(r.recording_id).name
-                job.update(status="duplicate" if r.skipped else "done", recording=r.recording_id)
+                run(job)
+                job["status"] = job.get("result", "done")
             except Exception as e:
                 job.update(status="error", error=f"{type(e).__name__}: {e}")
+
+    def _import(self, job: dict, path: Path, threshold: float) -> None:
+        with self.model_lock, self.store() as store:
+            labeler = self._labeler(store, threshold)
+            r = Pipeline(self.transcriber(), store, labeler).process_file(path)
+            if r.skipped:  # same audio was imported before: drop the copy
+                path.unlink(missing_ok=True)
+                job["name"] = store.recording(r.recording_id).name
+        job.update(result="duplicate" if r.skipped else "done", recording=r.recording_id)
+        if not r.skipped:
+            self.suggest(r.recording_id)
+
+    def suggest(self, rid: int) -> dict | None:
+        """Queue working out candidates for a recording's unsure words (None
+        if there are none left to do)."""
+        with self.store() as store:
+            rec = store.recording(rid)
+            if rec is None or not store.unsure_words(rid):
+                return None
+
+        def run(job):
+            def progress(done, total):
+                job["progress"] = [done, total]
+
+            with self.store() as store:
+                ops.suggest_words(store, self.transcriber(), rid, self.model_lock, progress)
+
+        return self._enqueue("suggest", rec.name, run, recording=rid)
+
+    def suggest_pending(self) -> list[dict]:
+        """Queue every recording that still has unsure words not analysed."""
+        with self.store() as store:
+            pending = store.pending_unsure()
+        return [job for rid in pending if (job := self.suggest(rid))]
 
     def job_list(self, q, body):
         return sorted(self.jobs.values(), key=lambda j: -j["id"])[:20]
@@ -374,6 +408,7 @@ class App:
         with self.store() as store:
             params = getattr(self.transcriber(), "params", {})
             rid = session.save(store, self.library, params)
+        self.suggest(rid)
         return {"recording": rid, "committed": committed}
 
     # ---- unsure words: candidates, corrections, pronunciation ----
@@ -393,20 +428,22 @@ class App:
             if ctx is None:
                 raise ApiError(404, f"no word {wid}")
             rec = store.recording(ctx["recording_id"])
+            cands = store.candidates(wid)  # usually worked out in the background already
         w = ctx["word"]
         heard = w.original if w.original is not None else w.word
-        alts, rank = [], None
-        with self.model_lock:
-            try:
-                audio = self._recording_audio(rec.path)
+        if cands is None:
+            with self.model_lock:
+                try:
+                    audio = self._recording_audio(rec.path)
+                except FileNotFoundError as e:
+                    raise ApiError(400, f"audio file not found: {e.filename}") from e
                 t0 = ctx["segment_start"]
                 clip = audio[int(t0 * 16000) : int(ctx["segment_end"] * 16000)]
                 tr = self.transcriber()
-                alts = tr.alternatives(clip, w.start - t0, w.end - t0, language=rec.language)
-                rank = tr.word_rank
-            except FileNotFoundError as e:
-                raise ApiError(400, f"audio file not found: {e.filename}") from e
-            cands = learn.candidates(heard, alts, rank)
+                (alts,) = tr.alternatives(clip, [(w.start - t0, w.end - t0)], language=rec.language)
+                cands = learn.candidates(heard, alts, tr.word_rank)
+            with self.store() as store:
+                store.set_candidates(wid, cands)
         return {
             "id": wid,
             "word": w.word,
@@ -625,6 +662,8 @@ def serve(
 ) -> None:
     app = App(db, device=device, library=library, whisper=whisper)
     Store(db).close()  # create / migrate the database before the first request
+    if app.suggest_pending():
+        print("working out suggestions for unsure words in the background")
     server = ThreadingHTTPServer((host, port), make_handler(app))
     url = f"http://{host}:{server.server_address[1]}/"
     print(f"recorder UI on {url}  (Ctrl+C to stop)")

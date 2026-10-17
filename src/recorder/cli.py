@@ -96,6 +96,26 @@ def cmd_transcribe(args) -> None:
                     "skip (already in db)" if r.skipped else f"ok -> recording {r.recording_id}"
                 )
                 print(f"{r.path}: {status}")
+                if not args.no_suggest:
+                    _suggest(store, transcriber, r.recording_id)
+
+
+def _suggest(store: Store, transcriber, recording_id: int) -> None:
+    n = ops.suggest_words(store, transcriber, recording_id)
+    if n:
+        print(f"  recording {recording_id}: suggestions for {n} unsure word(s)")
+
+
+def cmd_suggest(args) -> None:
+    from .transcribe import WhisperTranscriber
+
+    transcriber = WhisperTranscriber(model=args.model, device=args.device, language=args.language)
+    with Store(args.db) as store:
+        ids = args.recording_ids or list(store.pending_unsure())
+        for rid in ids:
+            _suggest(store, transcriber, rid)
+        if not ids:
+            print("no unsure words left to analyse")
 
 
 def cmd_ui(args) -> None:
@@ -177,6 +197,9 @@ def main(argv: list[str] | None = None) -> None:
         "--reprocess", action="store_true", help="re-transcribe files already in the database"
     )
     t.add_argument("--no-speakers", action="store_true", help="skip me/other labelling")
+    t.add_argument(
+        "--no-suggest", action="store_true", help="skip suggesting corrections for unsure words"
+    )
     t.add_argument("--threshold", type=float, default=0.3, help="min voiceprint similarity")
     t.set_defaults(func=cmd_transcribe)
 
@@ -198,6 +221,13 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--rescore", action="store_true", help="re-embed the audio (after a new enroll)")
     r.add_argument("--device", default="auto", help="auto / cuda / cpu")
     r.set_defaults(func=cmd_relabel)
+
+    sg = sub.add_parser("suggest", help="suggest corrections for unsure words (done on transcribe)")
+    sg.add_argument("recording_ids", nargs="*", type=int, help="default: all not analysed yet")
+    sg.add_argument("--model", default="large-v3")
+    sg.add_argument("--device", default="auto", help="auto / cuda / cpu")
+    sg.add_argument("--language", default=None, help="force language, e.g. en / zh")
+    sg.set_defaults(func=cmd_suggest)
 
     s = sub.add_parser("show", help="print a recording's transcript")
     s.add_argument("recording_id", type=int)

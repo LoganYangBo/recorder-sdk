@@ -205,7 +205,7 @@ button.rec-btn::before { content: "●"; margin-right: 5px; }
 
 <div class="layout">
   <aside>
-    <div id="jobsBox" hidden><h2>导入</h2><div class="jobs" id="jobs"></div></div>
+    <div id="jobsBox" hidden><h2>后台任务</h2><div class="jobs" id="jobs"></div></div>
     <h2>录音</h2>
     <div id="recs"></div>
   </aside>
@@ -604,6 +604,11 @@ async function pollJobs() {
   if (jobs.some(j => ["queued", "running"].includes(j.status)) || uploading.length)
     jobsTimer = setTimeout(pollJobs, 2000);
 }
+function jobLabel(j, label) {
+  if (j.kind !== "suggest") return label[j.status];
+  if (j.status === "running") return j.progress ? `分析难词 ${j.progress[0]}/${j.progress[1]}` : "分析难词";
+  return j.status === "done" ? "难词已分析" : label[j.status];
+}
 function renderJobs(jobs = renderJobs.last || []) {
   renderJobs.last = jobs;
   const label = { queued: "排队中", running: "转写中", done: "完成", duplicate: "已存在", error: "出错" };
@@ -612,7 +617,7 @@ function renderJobs(jobs = renderJobs.last || []) {
     ...jobs.filter(j => !hidden.has(j.id)).map(j => `<div class="job" ${j.recording ? `data-open="${j.recording}" style="cursor:pointer"` : ""}>
       ${["queued", "running"].includes(j.status) ? `<span class="spin"></span>` : ""}
       <span class="jn">${esc(j.name)}</span>
-      <span class="st ${j.status === "error" ? "err" : j.status === "done" ? "ok" : ""}" title="${esc(j.error || "")}">${label[j.status]}</span>
+      <span class="st ${j.status === "error" ? "err" : j.status === "done" ? "ok" : ""}" title="${esc(j.error || "")}">${jobLabel(j, label)}</span>
       ${j.status === "error" ? `<button class="link" data-dismiss="${j.id}" title="关闭">✕</button>` : ""}</div>`),
   ];
   $("#jobsBox").hidden = !rows.length;
@@ -908,7 +913,7 @@ async function stopLive() {
     await sendLive();
     const r = await api(`/api/live/${live.id}/stop`, { method: "POST", body: {} });
     live.id = null;
-    if (r.recording) { await loadRecs(); openRec(r.recording); toast("已保存为一条录音，可以点“改名”起个名字"); }
+    if (r.recording) { await loadRecs(); openRec(r.recording); pollJobs(); toast("已保存为一条录音，可以点“改名”起个名字"); }
     else { live.segs.push(...r.committed); renderLive(); toast("录音太短，没有保存"); }
   });
 }

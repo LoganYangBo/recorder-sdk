@@ -40,9 +40,12 @@ class FakeTranscriber:
         segs = [Segment(0, 2, "imported a"), Segment(2, 4, "imported b"), Segment(4, 6, "c")]
         return Transcript("en", 6, segs, params=self.params)
 
-    def alternatives(self, audio, start, end, language=None):
-        assert len(audio) == 2 * SR and (start, end) == (1, 2)  # the word within its segment
-        return ["Logan", "logging", "Logan", "logan", "lagoon"]
+    calls = 0
+
+    def alternatives(self, audio, spans, language=None):
+        FakeTranscriber.calls += 1
+        assert len(audio) == 2 * SR and spans == [(1, 2)]  # the word within its segment
+        return [["Logan", "logging", "Logan", "logan", "lagoon"]]
 
     def word_rank(self, word):
         return 0
@@ -295,7 +298,10 @@ def test_delete_recording(server, tmp_path):
 
 def test_unsure_word_candidates_and_correction(server, tmp_path):
     wid = jcall(server, "/api/recordings/1/segments")[0]["words"][1][4]
+    FakeTranscriber.calls = 0
     info = jcall(server, f"/api/words/{wid}/candidates")
+    assert jcall(server, f"/api/words/{wid}/candidates") == info
+    assert FakeTranscriber.calls == 1  # worked out once, then read from the database
     assert (info["heard"], info["corrected"], info["probability"]) == ("logan", False, 0.2)
     words = [c["word"] for c in info["candidates"]]
     assert words[:2] == ["logging", "lagoon"] and len(words) <= 4 and "logan" not in words
@@ -324,3 +330,36 @@ def test_pronunciation_proxy(server, tmp_path):
         with pytest.raises(urllib.error.HTTPError) as e:
             call(server, f"/api/pronounce?word={word}")
         assert e.value.code == code
+
+
+def test_unsure_words_are_analysed_in_one_go(tmp_path, monkeypatch):
+    audio = np.zeros(6 * SR, np.float32)
+    monkeypatch.setattr(speaker_mod, "load_audio", lambda path: audio)
+    (tmp_path / "a.wav").write_bytes(b"x")
+    words = [Word(0, 1, "I", 0.9), Word(1, 2, "sink", 0.3), Word(2, 3, "so", 0.5)]
+    t = Transcript("en", 6, [Segment(0, 3, "I sink so", words=words), Segment(3, 6, "fine")])
+    db = tmp_path / "t.db"
+    with Store(db) as store:
+        store.save(tmp_path / "a.wav", "h", t)
+
+    class T(FakeTranscriber):
+        def alternatives(self, audio, spans, language=None):
+            T.calls += 1
+            assert len(audio) == 3 * SR and spans == [(1, 2), (2, 3)]  # both words, one pass
+            return [["think", "think"], ["sew"]]
+
+    app = App(db, transcriber=T(), library=tmp_path / "lib")
+    T.calls = 0
+    (job,) = app.suggest_pending()
+    assert (job["kind"], job["recording"]) == ("suggest", 1)
+    for _ in range(100):
+        if job["status"] == "done":
+            break
+        time.sleep(0.02)
+    assert job["status"] == "done" and job["progress"] == [2, 2] and T.calls == 1
+    with Store(db) as store:
+        ids = [w.id for w in store.segments(1, words=True)[0].words]
+        assert store.candidates(ids[0]) is None  # sure word: not analysed
+        assert store.candidates(ids[1])[0] == "think" and store.candidates(ids[2])[0] == "sew"
+        assert store.pending_unsure() == {}
+    assert app.suggest_pending() == []  # nothing left to do

@@ -1,7 +1,9 @@
-"""Speaker operations shared by the CLI and the web UI."""
+"""Speaker and unsure-word operations shared by the CLI and the web UI."""
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from .models import Transcript
@@ -76,3 +78,43 @@ def relabel(
             segs = store.segments(rid)
             labeler.relabel(Transcript("", 0.0, segs))
             store.set_speakers(rid, segs)
+
+
+def suggest_words(
+    store: Store,
+    transcriber,
+    recording_id: int,
+    lock=None,
+    progress: Callable[[int, int], None] | None = None,
+) -> int:
+    """Work out correction candidates for every unsure word of a recording
+    not analysed yet, and store them; returns how many words were done.
+    `lock` (if given) is held around each model call; `progress(done, total)`
+    is called after each segment."""
+    from . import learn
+    from .speaker import SAMPLE_RATE, load_audio
+
+    rec = store.recording(recording_id)
+    todo = store.unsure_words(recording_id)
+    if rec is None or not todo:
+        return 0
+    by_segment: dict[tuple[float, float], list] = {}
+    for s0, s1, w in todo:
+        by_segment.setdefault((s0, s1), []).append(w)
+    audio = load_audio(rec.path)
+    done = 0
+    for (s0, s1), words in by_segment.items():
+        clip = audio[int(s0 * SAMPLE_RATE) : int(s1 * SAMPLE_RATE)]
+        spans = [(w.start - s0, w.end - s0) for w in words]
+        with lock or contextlib.nullcontext():
+            alts = transcriber.alternatives(clip, spans, language=rec.language)
+            found = [
+                learn.candidates(w.original or w.word, a, transcriber.word_rank)
+                for w, a in zip(words, alts)
+            ]
+        for w, cands in zip(words, found):
+            store.set_candidates(w.id, cands)
+        done += len(words)
+        if progress:
+            progress(done, len(todo))
+    return done
