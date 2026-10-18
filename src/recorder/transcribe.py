@@ -39,7 +39,7 @@ class WhisperTranscriber:
     CTranslate2 choose (float16 on GPU, int8 on CPU).
 
     initial_prompt / hotwords help with names and jargon Whisper would
-    otherwise mishear, e.g. hotwords="Logan nRF52840 XIAO".
+    otherwise mishear, e.g. hotwords="PyTorch Kubernetes".
     """
 
     def __init__(

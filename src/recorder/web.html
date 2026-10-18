@@ -201,47 +201,48 @@ button.rec-btn::before { content: "●"; margin-right: 5px; }
 <body>
 <header>
   <h1>Recorder</h1>
-  <input type="search" id="q" placeholder="搜索全部转写…">
+  <input type="search" id="q" data-i18n-ph="searchPh">
   <span class="spacer"></span>
-  <button id="importBtn">导入</button>
+  <button id="importBtn" data-i18n="import"></button>
   <input type="file" id="fileIn" accept="audio/*,.m4a,.mp3,.wav,.flac,.ogg,.opus,.aac" multiple hidden>
-  <button class="rec-btn" id="liveBtn">实时录音</button>
-  <button id="openNotes">纠错本</button>
-  <button id="openSpk">说话人</button>
+  <button class="rec-btn" id="liveBtn" data-i18n="live"></button>
+  <button id="openNotes" data-i18n="notes"></button>
+  <button id="openSpk" data-i18n="speakers"></button>
+  <button class="link" id="langBtn"></button>
 </header>
 
 <div class="layout">
   <aside>
-    <div id="jobsBox" hidden><h2>后台任务</h2><div class="jobs" id="jobs"></div></div>
-    <h2>录音</h2>
+    <div id="jobsBox" hidden><h2 data-i18n="jobs"></h2><div class="jobs" id="jobs"></div></div>
+    <h2 data-i18n="recordings"></h2>
     <div id="recs"></div>
   </aside>
-  <main id="main"><div class="empty">在左侧选一条录音</div></main>
+  <main id="main"><div class="empty" data-i18n="pickRec"></div></main>
 </div>
 
 <div class="drawer" id="drawer">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-    <h3 style="margin:0">说话人</h3><button class="link" id="closeSpk">关闭</button>
+    <h3 style="margin:0" data-i18n="speakers"></h3><button class="link" id="closeSpk" data-i18n="close"></button>
   </div>
   <section>
     <div id="spkList"></div>
-    <p class="hint">录入新的人：在转写里勾选他说的几段（合计 30 秒以上最好），在上方填名字后点“录入”。同名再录会覆盖。</p>
+    <p class="hint" data-i18n="spkHint"></p>
   </section>
   <section>
-    <h3>阈值</h3>
+    <h3 data-i18n="threshold"></h3>
     <div class="slider"><input type="range" id="thr" min="0" max="0.8" step="0.01"><b id="thrVal"></b></div>
-    <p class="hint">最像的人分数低于阈值就标为 other。调整后点“应用”，只用已存分数，立刻生效。</p>
+    <p class="hint" data-i18n="thrHint"></p>
     <div class="row">
-      <button class="primary" id="applyThr">应用到全部录音</button>
-      <button id="rescore">重新计算全部</button>
+      <button class="primary" id="applyThr" data-i18n="applyThr"></button>
+      <button id="rescore" data-i18n="rescore"></button>
     </div>
-    <p class="hint">录入或删除某人后，用“重新计算全部”重新比对音频（较慢）。</p>
+    <p class="hint" data-i18n="rescoreHint"></p>
   </section>
 </div>
 
-<div class="drop" id="drop">松开即可导入并转写</div>
+<div class="drop" id="drop" data-i18n="drop"></div>
 <div class="toast" id="toast"></div>
-<div class="busy" id="busy"><div id="busyText">处理中…</div></div>
+<div class="busy" id="busy"><div id="busyText"></div></div>
 
 <script>
 const $ = (s, el = document) => el.querySelector(s);
@@ -253,6 +254,163 @@ const state = {
 
 function localGet(k, d) { try { return localStorage.getItem("rec." + k) ?? d; } catch { return d; } }
 function localSet(k, v) { try { localStorage.setItem("rec." + k, v); } catch {} }
+
+// ---------- language: English or Chinese, from the browser unless picked ----------
+const STRINGS = {
+  en: {
+    searchPh: "Search all transcripts…", import: "Import", live: "Record live", notes: "Notebook",
+    speakers: "Speakers", jobs: "Background jobs", recordings: "Recordings",
+    pickRec: "Pick a recording on the left", close: "Close",
+    spkHint: "To add a person, tick a few of their segments in a transcript (30 s or more in total works best), type their name above and click “Enroll voiceprint”. Enrolling the same name again replaces it.",
+    threshold: "Threshold",
+    thrHint: "A segment whose best match scores below the threshold is labelled other. “Apply” reuses the stored scores, so it takes effect at once.",
+    applyThr: "Apply to all recordings", rescore: "Recompute all",
+    rescoreHint: "After enrolling or deleting someone, “Recompute all” compares the audio again (slower).",
+    drop: "Drop to import and transcribe", working: "Working…", error: "Error: {msg}",
+    week: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+    offsetTitle: "{t} into the recording", noStart: "This recording has no start time",
+    unlabelled: "unlabelled", undated: "No date", nSegs: "{n} segments", nSegs1: "1 segment",
+    noRecs: "No recordings yet. Run<br><code>recorder transcribe FILE</code>",
+    rename: "Rename", delete: "Delete", unknownStart: "Start time unknown",
+    editTime: "Change time", setStart: "Set start time",
+    modeSegs: "Segments", modeTurns: "Turns", showScores: "Show scores", markUnsure: "Mark unsure words",
+    personName: "Their name", enroll: "Enroll voiceprint", clearSel: "Clear selection",
+    wordTitle: "{p}% sure, click for candidates", wordFixed: "Heard as “{orig}”, click to compare",
+    wordOk: "Confirmed, click to compare", noTranscript: "This recording has no transcript",
+    selected: "{n} segments selected, {s} s", selected1: "1 segment selected, {s} s", needName: "Enter a name first",
+    replaceVp: "Replace the voiceprint of “{name}” with the selected segments?",
+    enrolling: "Enrolling {name} and relabelling this recording… (the model loads the first time)",
+    enrolled: "Enrolled {name}: {n} segments of this recording are now {name}. For other recordings, use Speakers → Recompute all.",
+    enrolled1: "Enrolled {name}: 1 segment of this recording is now {name}. For other recordings, use Speakers → Recompute all.",
+    enrolledNone: "Enrolled {name}, but no segment of this recording passed the threshold. Tick “Show scores”; the threshold may need lowering.",
+    noVoiceprints: "No voiceprints yet. Run <code>recorder enroll my_voice.m4a</code> to enroll yourself (me).",
+    forgetConfirm: "Delete the voiceprint of “{name}”? Existing labels change after “Recompute all”.",
+    deleting: "Deleting…", deletedName: "Deleted {name}",
+    rescoring: "Comparing the audio of every recording again…", applyingThr: "Applying the threshold…",
+    updated: "Updated {n} recordings", updated1: "Updated 1 recording",
+    hits: "{n} results for “{q}”", hits1: "1 result for “{q}”", first100: " (first 100 shown)",
+    save: "Save", cancel: "Cancel", clear: "Clear", renamed: "Renamed", nameReset: "Back to the file name",
+    startsAt: "Starts at", startSet: "Start time set", startCleared: "Start time cleared",
+    deleteConfirm: "Delete “{name}”? Its transcript and speaker labels are deleted for good.\nIf the audio was imported or recorded live (it is in the recordings folder), the audio file is deleted too; files elsewhere are kept.",
+    noRecsShort: "No recordings yet", deletedWithFile: "Deleted “{name}” and its audio file",
+    deletedKept: "Deleted “{name}”; the audio file is kept at {path}", fileErr: "{name}: {msg}",
+    dupImport: "{name} was already imported",
+    analysing: "Analysing words", analysingN: "Analysing words {i}/{n}", analysed: "Words analysed",
+    jobQueued: "Queued", jobRunning: "Transcribing", jobDone: "Done", jobDuplicate: "Already imported",
+    jobError: "Failed", uploading: "Uploading",
+    findingWords: "Looking for likely words… (the model loads the first time)",
+    heard: "Heard", sure: "{p}% sure", playClip: "▶ Your audio", sayHeard: "▶ How “{w}” sounds",
+    whichOne: "Which word was it?", noCands: "No similar words found",
+    otherPh: "None of these? Type the right word", ok: "OK", itsRight: "It was right: {w}",
+    confirmedToast: "Confirmed “{w}” and added it to the notebook",
+    changedToast: "Changed to “{w}” and added it to the notebook",
+    diffSub: "/{a}/ said as /{b}/", diffDel: "/{a}/ left out", diffIns: "extra /{b}/",
+    diffFar: "The two words sound very different, so it was more likely misheard than mispronounced",
+    sep: "; ", standard: "Standard", sayStd: "▶ Standard", yourAudio: "Your audio",
+    rightUnsureP: "Recognised correctly, but only {p}% sure", rightUnsure: "Recognised correctly, but unsure",
+    whyUnsure: "Whisper wasn't sure of this word, often because it was said unclearly or fast. Compare the two.",
+    meant: "Meant", soundsLike: "Heard", sameSounds: "The same sounds: perhaps stress or speed",
+    noIpa: "This word isn't in the pronunciation dictionary; compare the two by ear",
+    compareTitle: "Compare pronunciation", repick: "Pick another word",
+    clipFail: "Can't play this clip (the recording file may be gone)",
+    voiceDict: "Dictionary", voiceFemale: "American female", voiceMale: "American male",
+    voiceTitle: "Voice for the standard pronunciation",
+    synth: "Synthesising… (the voice model downloads the first time)", voiceFail: "{voice} unavailable: {msg}",
+    noStd: "No standard pronunciation found for this word",
+    sysVoice: "No human recording in the dictionary, so the system voice reads it",
+    entries: "{n} entries", entries1: "1 entry", stdPron: "Standard pronunciation", exportMd: "Export Markdown",
+    noteConfirmed: "· recognised correctly but unsure: listen to yourself", heardAs: "heard as",
+    playStd: "▶ Standard", playOrig: "▶ Yours", gotoText: "Go to transcript", recDeleted: "(recording deleted)",
+    noNotes: "No corrections yet. Click a word underlined in orange in a transcript and pick the right word, and it is added here.",
+    startRec: "Start recording",
+    liveHint: "Records from the microphone, transcribing and labelling speakers as you talk. It is saved as a recording when you stop.",
+    micFail: "Can't use the microphone: {msg}", stop: "Stop", recordingNow: "Recording",
+    transcribeErr: "Transcription failed: {msg}", finishing: "Transcribing the last part and saving…",
+    liveSaved: "Saved as a recording; use “Rename” to give it a name", tooShort: "Too short, not saved",
+    noServer: "Can't reach the local server: {msg}", otherLang: "中文",
+  },
+  zh: {
+    searchPh: "搜索全部转写…", import: "导入", live: "实时录音", notes: "纠错本",
+    speakers: "说话人", jobs: "后台任务", recordings: "录音",
+    pickRec: "在左侧选一条录音", close: "关闭",
+    spkHint: "录入新的人：在转写里勾选他说的几段（合计 30 秒以上最好），在上方填名字后点“录入声纹”。同名再录会覆盖。",
+    threshold: "阈值",
+    thrHint: "最像的人分数低于阈值就标为 other。调整后点“应用”，只用已存分数，立刻生效。",
+    applyThr: "应用到全部录音", rescore: "重新计算全部",
+    rescoreHint: "录入或删除某人后，用“重新计算全部”重新比对音频（较慢）。",
+    drop: "松开即可导入并转写", working: "处理中…", error: "出错：{msg}",
+    week: ["周日", "周一", "周二", "周三", "周四", "周五", "周六"],
+    offsetTitle: "录音第 {t}", noStart: "这条录音没有开始时间",
+    unlabelled: "未标注", undated: "没有日期", nSegs: "{n} 段",
+    noRecs: "还没有录音。先运行<br><code>recorder transcribe 文件</code>",
+    rename: "改名", delete: "删除", unknownStart: "不知道这条录音是什么时候录的",
+    editTime: "改时间", setStart: "设置开始时间",
+    modeSegs: "逐段", modeTurns: "按轮次", showScores: "显示分数", markUnsure: "标出没把握的词",
+    personName: "这个人的名字", enroll: "录入声纹", clearSel: "取消选择",
+    wordTitle: "{p}%，点击查看候选", wordFixed: "原来听成 “{orig}”，点击对比发音",
+    wordOk: "已确认，点击对比发音", noTranscript: "这条录音没有转写内容",
+    selected: "已选 {n} 段，共 {s} 秒", needName: "先填名字",
+    replaceVp: "已有“{name}”的声纹，用选中的段覆盖它？",
+    enrolling: "正在录入 {name} 的声纹并重新标注这条录音…（第一次会加载模型）",
+    enrolled: "已录入 {name}，这条录音里有 {n} 段标成了 {name}。其他录音点“说话人 → 重新计算全部”",
+    enrolledNone: "已录入 {name}，但这条录音没有一段超过阈值。勾上“显示分数”看看，可能要调低阈值",
+    noVoiceprints: "还没有声纹。先运行 <code>recorder enroll my_voice.m4a</code> 录入你自己（me）。",
+    forgetConfirm: "删除“{name}”的声纹？已打的标签要“重新计算全部”后才会更新。",
+    deleting: "删除中…", deletedName: "已删除 {name}",
+    rescoring: "正在重新比对全部录音的音频…", applyingThr: "应用阈值…",
+    updated: "已更新 {n} 条录音", hits: "“{q}” 共 {n} 条", first100: "（只显示前 100）",
+    save: "保存", cancel: "取消", clear: "清除", renamed: "已改名", nameReset: "已恢复为文件名",
+    startsAt: "开始于", startSet: "已设置开始时间", startCleared: "已清除开始时间",
+    deleteConfirm: "删除“{name}”？转写和说话人标签会一起删除，无法恢复。\n如果音频是导入或实时录的（在 recordings 文件夹里），音频文件也会删除；其他位置的原文件保留。",
+    noRecsShort: "还没有录音", deletedWithFile: "已删除“{name}”和它的音频文件",
+    deletedKept: "已删除“{name}”，原音频文件保留在 {path}", fileErr: "{name}：{msg}",
+    dupImport: "{name} 之前已经导入过",
+    analysing: "分析难词", analysingN: "分析难词 {i}/{n}", analysed: "难词已分析",
+    jobQueued: "排队中", jobRunning: "转写中", jobDone: "完成", jobDuplicate: "已存在",
+    jobError: "出错", uploading: "上传中",
+    findingWords: "正在找可能的词…（第一次会加载模型）",
+    heard: "听到", sure: "把握 {p}%", playClip: "▶ 录音原声", sayHeard: "▶ {w} 的标准发音",
+    whichOne: "实际说的是哪个？", noCands: "没有找到相近的词",
+    otherPh: "都不是？输入正确的词", ok: "确定", itsRight: "识别没错，就是 {w}",
+    confirmedToast: "已确认 “{w}”，记入纠错本", changedToast: "已改为 “{w}”，并记入纠错本",
+    diffSub: "/{a}/ 发成了 /{b}/", diffDel: "漏了 /{a}/", diffIns: "多了 /{b}/",
+    diffFar: "两个词发音差别很大，更可能是识别错了，不太像发音问题",
+    sep: "；", standard: "标准", sayStd: "▶ 标准发音", yourAudio: "你的录音",
+    rightUnsureP: "识别对了，但只有 {p}% 把握", rightUnsure: "识别对了，但没把握",
+    whyUnsure: "Whisper 对这个词没把握，常见原因是发音不够清楚或太快。对比听听两段。",
+    meant: "应该是", soundsLike: "听起来像", sameSounds: "音素一样，可能是重音或语速的问题",
+    noIpa: "词典里没有这个词的音标，听听两段发音对比一下",
+    compareTitle: "发音对比", repick: "改选别的词",
+    clipFail: "这段原声放不了（录音文件可能不在了）",
+    voiceDict: "词典真人", voiceFemale: "美式女声", voiceMale: "美式男声",
+    voiceTitle: "标准发音用谁的声音",
+    synth: "正在合成…（第一次要下载语音模型）", voiceFail: "{voice}用不了：{msg}",
+    noStd: "没有找到这个词的标准发音", sysVoice: "词典里没有真人录音，用系统语音朗读",
+    entries: "{n} 条", stdPron: "标准发音", exportMd: "导出 Markdown",
+    noteConfirmed: "· 识别对了但没把握，听听自己的发音", heardAs: "听成",
+    playStd: "▶ 标准", playOrig: "▶ 原声", gotoText: "去原文", recDeleted: "（录音已删除）",
+    noNotes: "还没有纠错记录。在转写里点橙色下划线的词，选出正确的词就会记到这里。",
+    startRec: "开始录音",
+    liveHint: "用麦克风录音，边录边转写并识别说话人。停止后自动保存为一条录音。",
+    micFail: "拿不到麦克风：{msg}", stop: "停止", recordingNow: "正在录音",
+    transcribeErr: "转写出错：{msg}", finishing: "正在转写最后一段并保存…",
+    liveSaved: "已保存为一条录音，可以点“改名”起个名字", tooShort: "录音太短，没有保存",
+    noServer: "连不上本地服务：{msg}", otherLang: "English",
+  },
+};
+const LANG = (l => l in STRINGS ? l : (navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en")(localGet("lang", ""));
+// t("key", {name: ...}) fills {name}; values are inserted as given, so escape them first where needed.
+// With n === 1, "key1" is used if there is one (English singulars).
+function t(key, vars = {}) {
+  const pick = k => STRINGS[LANG][k] ?? STRINGS.en[k];
+  const s = (vars.n === 1 && STRINGS[LANG][key + "1"]) || pick(key) || key;
+  return typeof s === "string" ? s.replace(/\{(\w+)\}/g, (m, k) => k in vars ? vars[k] : m) : s;
+}
+document.documentElement.lang = LANG === "zh" ? "zh-CN" : "en";
+document.querySelectorAll("[data-i18n]").forEach(el => el.textContent = t(el.dataset.i18n));
+document.querySelectorAll("[data-i18n-ph]").forEach(el => el.placeholder = t(el.dataset.i18nPh));
+$("#langBtn").textContent = t("otherLang");
+$("#langBtn").onclick = () => { localSet("lang", LANG === "zh" ? "en" : "zh"); location.reload(); };
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -271,7 +429,7 @@ function toast(msg) {
 }
 async function busy(text, fn) {
   $("#busyText").textContent = text; $("#busy").classList.add("show");
-  try { return await fn(); } catch (e) { toast("出错：" + e.message); } finally { $("#busy").classList.remove("show"); }
+  try { return await fn(); } catch (e) { toast(t("error", { msg: e.message })); } finally { $("#busy").classList.remove("show"); }
 }
 
 const fmt = t => {
@@ -279,7 +437,6 @@ const fmt = t => {
   return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0");
 };
 // wall-clock time `offset` seconds into a recording, if its start time is known
-const WEEK = "日一二三四五六";
 const startDate = r => r && r.started_at ? new Date(r.started_at) : null;  // local time
 const pad2 = n => String(n).padStart(2, "0");
 function clock(r, offset, secs = true) {
@@ -287,10 +444,10 @@ function clock(r, offset, secs = true) {
   const t = new Date(d.getTime() + offset * 1000);
   return pad2(t.getHours()) + ":" + pad2(t.getMinutes()) + (secs ? ":" + pad2(t.getSeconds()) : "");
 }
-const dayLabel = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} 周${WEEK[d.getDay()]}`;
+const dayLabel = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${t("week")[d.getDay()]}`;
 // a time cell: the wall-clock time when known, the offset into the recording otherwise
 const timeText = (r, offset) => clock(r, offset) ?? fmt(offset);
-const timeTitle = (r, offset) => clock(r, offset) ? `录音第 ${fmt(offset)}` : "这条录音没有开始时间";
+const timeTitle = (r, offset) => clock(r, offset) ? t("offsetTitle", { t: fmt(offset) }) : t("noStart");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 function speakerColor(name) {
@@ -300,7 +457,7 @@ function speakerColor(name) {
   return `var(--s${1 + (h % 5)})`;
 }
 function chip(name) {
-  if (!name) return `<span class="chip none">未标注</span>`;
+  if (!name) return `<span class="chip none">${t("unlabelled")}</span>`;
   return `<span class="chip" style="color:${speakerColor(name)}" title="${esc(name)}">${esc(name)}</span>`;
 }
 
@@ -310,17 +467,17 @@ async function loadRecs() {
   // grouped by day, newest day first, in time order within a day; undated ones last
   const groups = new Map();
   for (const r of [...state.recs].sort((a, b) => (b.started_at || "").localeCompare(a.started_at || "") || b.id - a.id)) {
-    const key = r.started_at ? dayLabel(startDate(r)) : "没有日期";
+    const key = r.started_at ? dayLabel(startDate(r)) : t("undated");
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(r);
   }
-  const undated = groups.get("没有日期"); groups.delete("没有日期"); if (undated) groups.set("没有日期", undated);
+  const undated = groups.get(t("undated")); groups.delete(t("undated")); if (undated) groups.set(t("undated"), undated);
   $("#recs").innerHTML = state.recs.length ? [...groups].map(([day, recs]) => `
     <div class="day">${esc(day)}</div>` + recs.sort((a, b) => (a.started_at || "").localeCompare(b.started_at || "") || a.id - b.id).map(r => `
     <div class="rec ${state.rec?.id === r.id ? "active" : ""}" data-id="${r.id}">
       <div class="name" title="${esc(r.path)}">${esc(r.name)}</div>
-      <div class="meta">${r.started_at ? `${clock(r, 0, false)}–${clock(r, r.duration, false)}` : "#" + r.id} · ${fmt(r.duration)} · ${r.segments} 段 · ${esc(r.model || "?")}</div>
-    </div>`).join("")).join("") : `<div class="empty">还没有录音。先运行<br><code>recorder transcribe 文件</code></div>`;
+      <div class="meta">${r.started_at ? `${clock(r, 0, false)}–${clock(r, r.duration, false)}` : "#" + r.id} · ${fmt(r.duration)} · ${t("nSegs", { n: r.segments })} · ${esc(r.model || "?")}</div>
+    </div>`).join("")).join("") : `<div class="empty">${t("noRecs")}</div>`;
 }
 $("#recs").addEventListener("click", e => {
   const el = e.target.closest(".rec"); if (el) { stopLiveView(); openRec(+el.dataset.id); }
@@ -342,29 +499,29 @@ function renderRec() {
       <div class="title-row" id="titleRow">
         <h2>${esc(r.name)}</h2>
         ${r.title ? `<span class="file">${esc(r.file)}</span>` : ""}
-        <button class="link" id="renameBtn">改名</button>
-        <button class="link danger" id="deleteBtn">删除</button>
+        <button class="link" id="renameBtn">${t("rename")}</button>
+        <button class="link danger" id="deleteBtn">${t("delete")}</button>
       </div>
       <div class="when" id="whenRow">${r.started_at
         ? `${esc(dayLabel(startDate(r)))} ${clock(r, 0)} – ${clock(r, r.duration)}`
-        : `<span class="muted">不知道这条录音是什么时候录的</span>`}
-        <button class="link" id="whenBtn">${r.started_at ? "改时间" : "设置开始时间"}</button></div>
+        : `<span class="muted">${t("unknownStart")}</span>`}
+        <button class="link" id="whenBtn">${r.started_at ? t("editTime") : t("setStart")}</button></div>
       <audio id="audio" controls preload="metadata" src="/api/recordings/${r.id}/audio"></audio>
       <div class="toolbar">
         <span class="seg-toggle">
-          <button data-mode="segments" class="${state.mode === "segments" ? "on" : ""}">逐段</button>
-          <button data-mode="turns" class="${state.mode === "turns" ? "on" : ""}">按轮次</button>
+          <button data-mode="segments" class="${state.mode === "segments" ? "on" : ""}">${t("modeSegs")}</button>
+          <button data-mode="turns" class="${state.mode === "turns" ? "on" : ""}">${t("modeTurns")}</button>
         </span>
-        <label><input type="checkbox" id="optScores" ${state.scores ? "checked" : ""}> 显示分数</label>
-        <label><input type="checkbox" id="optLow" ${state.low ? "checked" : ""}> 标出没把握的词</label>
+        <label><input type="checkbox" id="optScores" ${state.scores ? "checked" : ""}> ${t("showScores")}</label>
+        <label><input type="checkbox" id="optLow" ${state.low ? "checked" : ""}> ${t("markUnsure")}</label>
         <span id="counts"></span>
       </div>
       <div class="selbar" id="selbar">
         <span id="selInfo"></span>
-        <input type="text" id="enrollName" list="spkNames" placeholder="这个人的名字" style="width:140px">
+        <input type="text" id="enrollName" list="spkNames" placeholder="${t("personName")}" style="width:140px">
         <datalist id="spkNames">${state.speakers.map(s => `<option value="${esc(s.name)}">`).join("")}</datalist>
-        <button class="primary" id="enrollBtn">录入声纹</button>
-        <button class="link" id="clearSel">取消选择</button>
+        <button class="primary" id="enrollBtn">${t("enroll")}</button>
+        <button class="link" id="clearSel">${t("clearSel")}</button>
       </div>
     </div>
     <div class="lines" id="lines"></div>`;
@@ -398,11 +555,11 @@ const norm = w => String(w).toLowerCase().replace(/^[^\w']+|[^\w']+$/g, "");
 function wordsHtml(seg) {
   if (!seg.words.length) return esc(seg.text);
   return seg.words.map(([w, st, , p, id, orig]) => {
-    let cls = p < 0.3 ? "w low vlow" : p < 0.6 ? "w low" : "w", title = `${Math.round(p * 100)}%，点击查看候选`;
+    let cls = p < 0.3 ? "w low vlow" : p < 0.6 ? "w low" : "w", title = t("wordTitle", { p: Math.round(p * 100) });
     if (orig != null) {
       const changed = norm(orig) !== norm(w);
       cls = changed ? "w fixed" : "w ok";
-      title = changed ? `原来听成 “${orig}”，点击对比发音` : "已确认，点击对比发音";
+      title = changed ? t("wordFixed", { orig }) : t("wordOk");
     }
     if (id == null) cls = cls.replace(/ ?(low|fixed|ok)/g, "");
     return `<span class="${cls}" data-t="${st}" ${id != null ? `data-wid="${id}"` : ""} title="${esc(title)}">${esc(w)}</span>`;
@@ -413,17 +570,17 @@ function renderLines() {
   const lines = $("#lines");
   lines.parentElement.classList.toggle("show-low", state.low);
   const counts = {};
-  state.segs.forEach(s => { counts[s.speaker || "未标注"] = (counts[s.speaker || "未标注"] || 0) + 1; });
+  state.segs.forEach(s => { const k = s.speaker || t("unlabelled"); counts[k] = (counts[k] || 0) + 1; });
   $("#counts").textContent = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(" · ");
-  if (!state.segs.length) { lines.innerHTML = `<div class="empty">这条录音没有转写内容</div>`; return; }
+  if (!state.segs.length) { lines.innerHTML = `<div class="empty">${t("noTranscript")}</div>`; return; }
   const isTurns = state.mode === "turns";
   $("main").classList.toggle("mode-turns", isTurns);
   if (isTurns) {
-    lines.innerHTML = turns(state.segs).map(t => `
-      <div class="line" data-start="${t.start}" data-end="${t.end}">
-        <span class="t" data-t="${t.start}" title="${timeTitle(state.rec, t.start)}">${timeText(state.rec, t.start)}</span>
-        <span class="who">${chip(t.speaker)}</span>
-        <span class="text">${t.segs.map(wordsHtml).join(" ")}</span>
+    lines.innerHTML = turns(state.segs).map(turn => `
+      <div class="line" data-start="${turn.start}" data-end="${turn.end}">
+        <span class="t" data-t="${turn.start}" title="${timeTitle(state.rec, turn.start)}">${timeText(state.rec, turn.start)}</span>
+        <span class="who">${chip(turn.speaker)}</span>
+        <span class="text">${turn.segs.map(wordsHtml).join(" ")}</span>
       </div>`).join("");
   } else {
     lines.innerHTML = state.segs.map(s => {
@@ -459,7 +616,7 @@ function updateSelbar() {
   const segs = state.segs.filter(s => state.selected.has(s.n));
   const secs = segs.reduce((a, s) => a + (s.end - s.start), 0);
   bar.classList.toggle("show", segs.length > 0);
-  $("#selInfo").textContent = `已选 ${segs.length} 段，共 ${Math.round(secs)} 秒`;
+  $("#selInfo").textContent = t("selected", { n: segs.length, s: Math.round(secs) });
 }
 
 function seek(t, play = true) {
@@ -482,17 +639,17 @@ function highlightPlaying() {
 
 async function enrollSelected() {
   const name = $("#enrollName").value.trim();
-  if (!name) { toast("先填名字"); return; }
+  if (!name) { toast(t("needName")); return; }
   const exists = state.speakers.some(s => s.name === name);
-  if (exists && !confirm(`已有“${name}”的声纹，用选中的段覆盖它？`)) return;
-  await busy(`正在录入 ${name} 的声纹并重新标注这条录音…（第一次会加载模型）`, async () => {
+  if (exists && !confirm(t("replaceVp", { name }))) return;
+  await busy(t("enrolling", { name }), async () => {
     const r = await api("/api/speakers/enroll", { method: "POST",
       body: { name, recording: state.rec.id, segments: [...state.selected], threshold: state.threshold } });
     await loadSpeakers();
     await openRec(state.rec.id);
     toast(r.labelled
-      ? `已录入 ${name}，这条录音里有 ${r.labelled} 段标成了 ${name}。其他录音点“说话人 → 重新计算全部”`
-      : `已录入 ${name}，但这条录音没有一段超过阈值。勾上“显示分数”看看，可能要调低阈值`);
+      ? t("enrolled", { name, n: r.labelled })
+      : t("enrolledNone", { name }));
   });
 }
 
@@ -500,16 +657,16 @@ async function enrollSelected() {
 async function loadSpeakers() {
   state.speakers = await api("/api/speakers");
   $("#spkList").innerHTML = state.speakers.length ? state.speakers.map(s => `
-    <div class="spk">${chip(s.name)}<span class="count">${s.segments} 段</span>
-      <button class="link danger" data-forget="${esc(s.name)}">删除</button></div>`).join("")
-    : `<p class="hint">还没有声纹。先运行 <code>recorder enroll my_voice.m4a</code> 录入你自己（me）。</p>`;
+    <div class="spk">${chip(s.name)}<span class="count">${t("nSegs", { n: s.segments })}</span>
+      <button class="link danger" data-forget="${esc(s.name)}">${t("delete")}</button></div>`).join("")
+    : `<p class="hint">${t("noVoiceprints")}</p>`;
 }
 $("#spkList").addEventListener("click", async e => {
   const name = e.target.dataset.forget; if (!name) return;
-  if (!confirm(`删除“${name}”的声纹？已打的标签要“重新计算全部”后才会更新。`)) return;
-  await busy("删除中…", async () => {
+  if (!confirm(t("forgetConfirm", { name }))) return;
+  await busy(t("deleting"), async () => {
     await api(`/api/speakers/${encodeURIComponent(name)}`, { method: "DELETE" });
-    await loadSpeakers(); toast(`已删除 ${name}`);
+    await loadSpeakers(); toast(t("deletedName", { name }));
   });
 });
 $("#openSpk").onclick = () => $("#drawer").classList.toggle("open");
@@ -520,11 +677,11 @@ thr.value = state.threshold; $("#thrVal").textContent = state.threshold.toFixed(
 thr.oninput = () => { $("#thrVal").textContent = (+thr.value).toFixed(2); };
 async function relabel(rescore) {
   state.threshold = +thr.value; localSet("threshold", thr.value);
-  await busy(rescore ? "正在重新比对全部录音的音频…" : "应用阈值…", async () => {
+  await busy(rescore ? t("rescoring") : t("applyingThr"), async () => {
     const r = await api("/api/relabel", { method: "POST", body: { threshold: state.threshold, rescore } });
     await loadSpeakers(); await loadRecs();
     if (state.rec) await openRec(state.rec.id);
-    toast(`已更新 ${r.recordings} 条录音`);
+    toast(t("updated", { n: r.recordings }));
   });
 }
 $("#applyThr").onclick = () => relabel(false);
@@ -535,13 +692,13 @@ let searchTimer;
 $("#q").addEventListener("input", e => {
   clearTimeout(searchTimer);
   const q = e.target.value.trim();
-  searchTimer = setTimeout(() => q ? search(q) : (state.rec ? renderRec() : ($("#main").innerHTML = `<div class="empty">在左侧选一条录音</div>`)), 250);
+  searchTimer = setTimeout(() => q ? search(q) : (state.rec ? renderRec() : ($("#main").innerHTML = `<div class="empty">${t("pickRec")}</div>`)), 250);
 });
 async function search(q) {
   const hits = await api("/api/search?q=" + encodeURIComponent(q));
   const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
   $("#main").innerHTML = `<div class="results">
-    <div class="top"><h2>“${esc(q)}” 共 ${hits.length} 条${hits.length === 100 ? "（只显示前 100）" : ""}</h2></div>
+    <div class="top"><h2>${t("hits", { q: esc(q), n: hits.length })}${hits.length === 100 ? t("first100") : ""}</h2></div>
     ${hits.map(h => `<div class="hit" data-rec="${h.recording}" data-start="${h.start}">
       <div>${chip(h.speaker)} ${esc(h.text).replace(re, m => `<mark>${m}</mark>`)}</div>
       <div class="meta">${esc(h.name)} · ${h.started_at ? esc(dayLabel(startDate(h))) + " " + clock(h, h.start) : fmt(h.start)}</div></div>`).join("")}
@@ -558,15 +715,15 @@ $("#main").addEventListener("click", e => {
 function startRename() {
   const r = state.rec, row = $("#titleRow");
   row.innerHTML = `<input type="text" id="titleIn" value="${esc(r.title || r.name)}" placeholder="${esc(r.file)}">
-    <button class="primary" id="titleSave">保存</button><button class="link" id="titleCancel">取消</button>`;
+    <button class="primary" id="titleSave">${t("save")}</button><button class="link" id="titleCancel">${t("cancel")}</button>`;
   const inp = $("#titleIn"); inp.focus(); inp.select();
   const save = async () => {
     const title = inp.value.trim() === r.file ? "" : inp.value.trim();
     try {
       await api(`/api/recordings/${r.id}/rename`, { method: "POST", body: { title } });
       await loadRecs(); state.rec = state.recs.find(x => x.id === r.id); renderRec();
-      toast(title ? "已改名" : "已恢复为文件名");
-    } catch (e) { toast("出错：" + e.message); }
+      toast(title ? t("renamed") : t("nameReset"));
+    } catch (e) { toast(t("error", { msg: e.message })); }
   };
   $("#titleSave").onclick = save;
   $("#titleCancel").onclick = renderRec;
@@ -578,16 +735,16 @@ function startSetWhen() {
   const r = state.rec, row = $("#whenRow");
   const d = startDate(r) || new Date();
   const local = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
-  row.innerHTML = `开始于 <input type="datetime-local" step="1" id="whenIn" value="${local}">
-    <button class="primary" id="whenSave">保存</button>
-    ${r.started_at ? `<button class="link" id="whenClear">清除</button>` : ""}
-    <button class="link" id="whenCancel">取消</button>`;
+  row.innerHTML = `${t("startsAt")} <input type="datetime-local" step="1" id="whenIn" value="${local}">
+    <button class="primary" id="whenSave">${t("save")}</button>
+    ${r.started_at ? `<button class="link" id="whenClear">${t("clear")}</button>` : ""}
+    <button class="link" id="whenCancel">${t("cancel")}</button>`;
   const set = async value => {
     try {
       await api(`/api/recordings/${r.id}/started`, { method: "POST", body: { started_at: value } });
       await loadRecs(); state.rec = state.recs.find(x => x.id === r.id); renderRec();
-      toast(value ? "已设置开始时间" : "已清除开始时间");
-    } catch (e) { toast("出错：" + e.message); }
+      toast(value ? t("startSet") : t("startCleared"));
+    } catch (e) { toast(t("error", { msg: e.message })); }
   };
   $("#whenSave").onclick = () => set($("#whenIn").value);
   if (r.started_at) $("#whenClear").onclick = () => set("");
@@ -597,15 +754,14 @@ function startSetWhen() {
 // ---------- delete ----------
 async function deleteRec() {
   const r = state.rec;
-  if (!confirm(`删除“${r.name}”？转写和说话人标签会一起删除，无法恢复。\n` +
-      `如果音频是导入或实时录的（在 recordings 文件夹里），音频文件也会删除；其他位置的原文件保留。`)) return;
-  await busy("删除中…", async () => {
+  if (!confirm(t("deleteConfirm", { name: r.name }))) return;
+  await busy(t("deleting"), async () => {
     const res = await api(`/api/recordings/${r.id}`, { method: "DELETE" });
     state.rec = null;
     await loadRecs(); await loadSpeakers();
     if (state.recs.length) openRec(state.recs[state.recs.length - 1].id);
-    else $("#main").innerHTML = `<div class="empty">还没有录音</div>`;
-    toast(res.deleted_file ? `已删除“${r.name}”和它的音频文件` : `已删除“${r.name}”，原音频文件保留在 ${res.path}`);
+    else $("#main").innerHTML = `<div class="empty">${t("noRecsShort")}</div>`;
+    toast(res.deleted_file ? t("deletedWithFile", { name: r.name }) : t("deletedKept", { name: r.name, path: res.path }));
   });
 }
 
@@ -630,7 +786,7 @@ async function uploadFiles(files) {
         { method: "POST", body: f, headers: { "Content-Type": "application/octet-stream" } });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-    } catch (e) { toast(`${f.name}：${e.message}`); }
+    } catch (e) { toast(t("fileErr", { name: f.name, msg: e.message })); }
     uploading.splice(uploading.indexOf(u), 1);
     pollJobs();
   }
@@ -649,7 +805,7 @@ async function pollJobs() {
     if (firstPoll && (finished || j.status === "error")) { hidden.add(j.id); seenDone.add(j.id); continue; }
     if (finished && !seenDone.has(j.id)) {
       seenDone.add(j.id); changed = true;
-      if (j.status === "duplicate") toast(`${j.name} 之前已经导入过`);
+      if (j.status === "duplicate") toast(t("dupImport", { name: j.name }));
       setTimeout(() => { hidden.add(j.id); renderJobs(); }, 4000);
     }
   }
@@ -661,19 +817,19 @@ async function pollJobs() {
 }
 function jobLabel(j, label) {
   if (j.kind !== "suggest") return label[j.status];
-  if (j.status === "running") return j.progress ? `分析难词 ${j.progress[0]}/${j.progress[1]}` : "分析难词";
-  return j.status === "done" ? "难词已分析" : label[j.status];
+  if (j.status === "running") return j.progress ? t("analysingN", { i: j.progress[0], n: j.progress[1] }) : t("analysing");
+  return j.status === "done" ? t("analysed") : label[j.status];
 }
 function renderJobs(jobs = renderJobs.last || []) {
   renderJobs.last = jobs;
-  const label = { queued: "排队中", running: "转写中", done: "完成", duplicate: "已存在", error: "出错" };
+  const label = { queued: t("jobQueued"), running: t("jobRunning"), done: t("jobDone"), duplicate: t("jobDuplicate"), error: t("jobError") };
   const rows = [
-    ...uploading.map(u => `<div class="job"><span class="spin"></span><span class="jn">${esc(u.name)}</span><span class="st">上传中</span></div>`),
+    ...uploading.map(u => `<div class="job"><span class="spin"></span><span class="jn">${esc(u.name)}</span><span class="st">${t("uploading")}</span></div>`),
     ...jobs.filter(j => !hidden.has(j.id)).map(j => `<div class="job" ${j.recording ? `data-open="${j.recording}" style="cursor:pointer"` : ""}>
       ${["queued", "running"].includes(j.status) ? `<span class="spin"></span>` : ""}
       <span class="jn">${esc(j.name)}</span>
       <span class="st ${j.status === "error" ? "err" : j.status === "done" ? "ok" : ""}" title="${esc(j.error || "")}">${jobLabel(j, label)}</span>
-      ${j.status === "error" ? `<button class="link" data-dismiss="${j.id}" title="关闭">✕</button>` : ""}</div>`),
+      ${j.status === "error" ? `<button class="link" data-dismiss="${j.id}" title="${t("close")}">✕</button>` : ""}</div>`),
   ];
   $("#jobsBox").hidden = !rows.length;
   $("#jobs").innerHTML = rows.join("");
@@ -704,11 +860,11 @@ async function openWordPop(el, repick = false) {
   closePop();
   const wid = +el.dataset.wid;
   pop = document.createElement("div"); pop.className = "pop";
-  pop.innerHTML = `<div class="muted">正在找可能的词…（第一次会加载模型）</div>`;
+  pop.innerHTML = `<div class="muted">${t("findingWords")}</div>`;
   document.body.appendChild(pop); placePop(el);
   let info;
   try { info = await api(`/api/words/${wid}/candidates`); }
-  catch (e) { pop.innerHTML = `<div class="muted">出错：${esc(e.message)}</div>`; return; }
+  catch (e) { pop.innerHTML = `<div class="muted">${t("error", { msg: esc(e.message) })}</div>`; return; }
   if (!pop) return;
   const clip = { wid };
   if (!repick && info.corrected) {
@@ -716,17 +872,17 @@ async function openWordPop(el, repick = false) {
     return;
   }
   pop.innerHTML = `
-    <div class="h"><span>听到 <b>${esc(info.heard)}</b> ${info.heard_ipa ? `<span class="ipa">/${esc(info.heard_ipa)}/</span>` : ""}</span>
-      <span class="muted">把握 ${Math.round(info.probability * 100)}%</span></div>
-    <div class="row" style="margin-top:0"><button class="play" data-clip>▶ 录音原声</button>
-      <button class="play" data-say="${esc(info.heard)}">▶ ${esc(info.heard)} 的标准发音</button></div>
-    <div class="muted" style="margin-top:10px">实际说的是哪个？</div>
+    <div class="h"><span>${t("heard")} <b>${esc(info.heard)}</b> ${info.heard_ipa ? `<span class="ipa">/${esc(info.heard_ipa)}/</span>` : ""}</span>
+      <span class="muted">${t("sure", { p: Math.round(info.probability * 100) })}</span></div>
+    <div class="row" style="margin-top:0"><button class="play" data-clip>${t("playClip")}</button>
+      <button class="play" data-say="${esc(info.heard)}">${t("sayHeard", { w: esc(info.heard) })}</button></div>
+    <div class="muted" style="margin-top:10px">${t("whichOne")}</div>
     <div class="cands">${info.candidates.length ? info.candidates.map(c =>
       `<button class="cand" data-pick="${esc(c.word)}"><span>${esc(c.word)}</span>${c.ipa ? `<small class="ipa">/${esc(c.ipa)}/</small>` : ""}</button>`).join("")
-      : `<span class="muted">没有找到相近的词</span>`}</div>
-    <div class="row"><input type="text" id="popOther" placeholder="都不是？输入正确的词">
-      <button data-pick-other>确定</button></div>
-    <div class="row"><button class="link" data-pick="${esc(info.heard)}">识别没错，就是 ${esc(info.heard)}</button></div>`;
+      : `<span class="muted">${t("noCands")}</span>`}</div>
+    <div class="row"><input type="text" id="popOther" placeholder="${t("otherPh")}">
+      <button data-pick-other>${t("ok")}</button></div>
+    <div class="row"><button class="link" data-pick="${esc(info.heard)}">${t("itsRight", { w: esc(info.heard) })}</button></div>`;
   placePop(el);
   bindPlay(clip);
   pop.querySelectorAll("[data-pick]").forEach(b => b.onclick = () => choose(el, wid, b.dataset.pick, clip));
@@ -738,7 +894,7 @@ async function openWordPop(el, repick = false) {
 async function choose(el, wid, word, clip) {
   let c;
   try { c = await api(`/api/words/${wid}/correct`, { method: "POST", body: { word } }); }
-  catch (e) { toast("出错：" + e.message); return; }
+  catch (e) { toast(t("error", { msg: e.message })); return; }
   // update the transcript in place
   for (const s of state.segs) {
     const w = s.words.find(w => w[4] === wid);
@@ -747,23 +903,23 @@ async function choose(el, wid, word, clip) {
   renderLines();
   const fresh = document.querySelector(`.w[data-wid="${wid}"]`) || el;
   showCompare(fresh, c, clip);
-  toast(c.heard === c.chosen ? `已确认 “${c.chosen}”，记入纠错本` : `已改为 “${c.chosen}”，并记入纠错本`);
+  toast(t(c.heard === c.chosen ? "confirmedToast" : "changedToast", { w: c.chosen }));
 }
 
 function ipaDiff(cmp) {
   // target IPA with wrongly said / missing sounds marked, and the heard IPA with the substitutes
   if (!cmp.target_ipa || !cmp.heard_ipa) return null;
-  let t = "", h = "", why = [];
+  let tt = "", h = "", why = [];
   for (const o of cmp.ops) {
-    if (o.op === "same") { t += esc(o.target); h += esc(o.heard); }
-    else if (o.op === "sub") { t += `<span class="bad">${esc(o.target)}</span>`; h += `<span class="bad">${esc(o.heard)}</span>`; why.push(`/${o.target}/ 发成了 /${o.heard}/`); }
-    else if (o.op === "del") { t += `<span class="bad">${esc(o.target)}</span>`; why.push(`漏了 /${o.target}/`); }
-    else { h += `<span class="bad">${esc(o.heard)}</span>`; why.push(`多了 /${o.heard}/`); }
+    if (o.op === "same") { tt += esc(o.target); h += esc(o.heard); }
+    else if (o.op === "sub") { tt += `<span class="bad">${esc(o.target)}</span>`; h += `<span class="bad">${esc(o.heard)}</span>`; why.push(t("diffSub", { a: o.target, b: o.heard })); }
+    else if (o.op === "del") { tt += `<span class="bad">${esc(o.target)}</span>`; why.push(t("diffDel", { a: o.target })); }
+    else { h += `<span class="bad">${esc(o.heard)}</span>`; why.push(t("diffIns", { b: o.heard })); }
   }
   // a word that shares little sound with the intended one was misheard, not mispronounced
   const same = cmp.ops.filter(o => o.op === "same").length;
-  if (why.length > 2 && same < why.length) why = ["两个词发音差别很大，更可能是识别错了，不太像发音问题"];
-  return { t, h, why };
+  if (why.length > 2 && same < why.length) why = [t("diffFar")];
+  return { t: tt, h, why };
 }
 
 function compareHtml(c) {
@@ -771,29 +927,29 @@ function compareHtml(c) {
     const ipa = c.compare.target_ipa;
     return `
     <div class="cmp">
-      <span class="muted">标准</span><span><b>${esc(c.chosen)}</b> ${ipa ? `<span class="ipa">/${esc(ipa)}/</span>` : ""}</span>
-      <span class="play-group"><button class="play" data-say="${esc(c.chosen)}">▶ 标准发音</button>${voiceSelect()}</span>
-      <span class="muted">你的录音</span><span class="muted">识别对了，但只有 ${c.probability != null ? Math.round(c.probability * 100) + "% " : ""}把握</span>
-      <button class="play" data-clip>▶ 录音原声</button>
+      <span class="muted">${t("standard")}</span><span><b>${esc(c.chosen)}</b> ${ipa ? `<span class="ipa">/${esc(ipa)}/</span>` : ""}</span>
+      <span class="play-group"><button class="play" data-say="${esc(c.chosen)}">${t("sayStd")}</button>${voiceSelect()}</span>
+      <span class="muted">${t("yourAudio")}</span><span class="muted">${c.probability != null ? t("rightUnsureP", { p: Math.round(c.probability * 100) }) : t("rightUnsure")}</span>
+      <button class="play" data-clip>${t("playClip")}</button>
     </div>
-    <div class="why">Whisper 对这个词没把握，常见原因是发音不够清楚或太快。对比听听两段。</div>`;
+    <div class="why">${t("whyUnsure")}</div>`;
   }
   const d = ipaDiff(c.compare);
   return `
     <div class="cmp">
-      <span class="muted">应该是</span><span><b>${esc(c.chosen)}</b> ${d ? `<span class="ipa">/${d.t}/</span>` : ""}</span>
-      <span class="play-group"><button class="play" data-say="${esc(c.chosen)}">▶ 标准发音</button>${voiceSelect()}</span>
-      <span class="muted">听起来像</span><span><b>${esc(c.heard)}</b> ${d ? `<span class="ipa">/${d.h}/</span>` : ""}</span>
-      <button class="play" data-clip>▶ 录音原声</button>
+      <span class="muted">${t("meant")}</span><span><b>${esc(c.chosen)}</b> ${d ? `<span class="ipa">/${d.t}/</span>` : ""}</span>
+      <span class="play-group"><button class="play" data-say="${esc(c.chosen)}">${t("sayStd")}</button>${voiceSelect()}</span>
+      <span class="muted">${t("soundsLike")}</span><span><b>${esc(c.heard)}</b> ${d ? `<span class="ipa">/${d.h}/</span>` : ""}</span>
+      <button class="play" data-clip>${t("playClip")}</button>
     </div>
-    <div class="why">${d ? (d.why.length ? d.why.join("；") : "音素一样，可能是重音或语速的问题")
-      : "词典里没有这个词的音标，听听两段发音对比一下"}</div>`;
+    <div class="why">${d ? (d.why.length ? d.why.join(t("sep")) : t("sameSounds"))
+      : t("noIpa")}</div>`;
 }
 
 function showCompare(el, c, clip) {
   if (!pop) { pop = document.createElement("div"); pop.className = "pop"; document.body.appendChild(pop); }
-  pop.innerHTML = `<div class="h"><b>发音对比</b><button class="link" id="popClose">关闭</button></div>${compareHtml(c)}
-    <div class="row"><button class="link" id="popRedo">改选别的词</button></div>`;
+  pop.innerHTML = `<div class="h"><b>${t("compareTitle")}</b><button class="link" id="popClose">${t("close")}</button></div>${compareHtml(c)}
+    <div class="row"><button class="link" id="popRedo">${t("repick")}</button></div>`;
   placePop(el);
   bindPlay(clip);
   $("#popClose").onclick = closePop;
@@ -811,14 +967,14 @@ const wordAudio = new Audio();
 async function playWord(wid) {
   $("#audio")?.pause();
   wordAudio.src = `/api/words/${wid}/clip.wav?v=${Date.now()}`;  // times can change after alignment
-  try { await wordAudio.play(); } catch { toast("这段原声放不了（录音文件可能不在了）"); }
+  try { await wordAudio.play(); } catch { toast(t("clipFail")); }
 }
 
-const VOICES = { dict: "词典真人", female: "美式女声", male: "美式男声" };
+const VOICES = { dict: t("voiceDict"), female: t("voiceFemale"), male: t("voiceMale") };
 let voice = localGet("voice", "dict");
 if (!(voice in VOICES)) voice = "dict";
 function voiceSelect() {
-  return `<select class="voice" title="标准发音用谁的声音">${Object.entries(VOICES).map(([k, v]) =>
+  return `<select class="voice" title="${t("voiceTitle")}">${Object.entries(VOICES).map(([k, v]) =>
     `<option value="${k}" ${k === voice ? "selected" : ""}>${v}</option>`).join("")}</select>`;
 }
 addEventListener("change", e => {
@@ -832,24 +988,24 @@ async function sayWord(word) {
   word = norm(word);
   if (voice !== "dict") {
     // synthesised: the first time per word takes a moment (and loads the model)
-    const t = setTimeout(() => toast("正在合成…（第一次要下载语音模型）"), 400);
+    const timer = setTimeout(() => toast(t("synth")), 400);
     try {
       const res = await fetch(`/api/pronounce?word=${encodeURIComponent(word)}&voice=${voice}`);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
       sayAudio.src = URL.createObjectURL(await res.blob());
-      clearTimeout(t); await sayAudio.play(); return;
-    } catch (e) { clearTimeout(t); toast(`${VOICES[voice]}用不了：${e.message}`); return; }
+      clearTimeout(timer); await sayAudio.play(); return;
+    } catch (e) { clearTimeout(timer); toast(t("voiceFail", { voice: VOICES[voice], msg: e.message })); return; }
   }
   sayAudio.src = `/api/pronounce?word=${encodeURIComponent(word)}`;
   try { await sayAudio.play(); return; } catch {}
   // no dictionary recording (or offline): fall back to the system voice
-  if (!("speechSynthesis" in window)) { toast("没有找到这个词的标准发音"); return; }
+  if (!("speechSynthesis" in window)) { toast(t("noStd")); return; }
   const u = new SpeechSynthesisUtterance(word);
   u.lang = "en-US"; u.rate = 0.85;
   const v = speechSynthesis.getVoices().find(v => v.lang === "en-US");
   if (v) u.voice = v;
   speechSynthesis.cancel(); speechSynthesis.speak(u);
-  toast("词典里没有真人录音，用系统语音朗读");
+  toast(t("sysVoice"));
 }
 
 // ---------- correction notebook ----------
@@ -859,25 +1015,25 @@ async function showNotes() {
   state.rec = null;
   document.querySelectorAll(".rec").forEach(el => el.classList.remove("active"));
   const rows = await api("/api/corrections");
-  $("#main").innerHTML = `<div class="top"><div class="title-row"><h2>纠错本</h2>
-      <span class="muted" style="color:var(--muted)">${rows.length} 条</span><span style="flex:1"></span>
-      <span class="muted" style="color:var(--muted)">标准发音</span>${voiceSelect()}
-      <a href="/api/corrections.md" download="corrections.md"><button>导出 Markdown</button></a></div></div>
+  $("#main").innerHTML = `<div class="top"><div class="title-row"><h2>${t("notes")}</h2>
+      <span class="muted" style="color:var(--muted)">${t("entries", { n: rows.length })}</span><span style="flex:1"></span>
+      <span class="muted" style="color:var(--muted)">${t("stdPron")}</span>${voiceSelect()}
+      <a href="/api/corrections.md?lang=${LANG}" download="corrections.md"><button>${t("exportMd")}</button></a></div></div>
     <div class="notes">${rows.length ? rows.map(c => {
       const d = ipaDiff(c.compare);
       return `<div class="note">
         <div class="words"><b>${esc(c.chosen)}</b> ${d ? `<span class="ipa">/${d.t}/</span>` : ""}
-          ${c.heard === c.chosen ? `<span class="muted">· 识别对了但没把握，听听自己的发音</span>` : `
-          <span class="muted">听成</span> ${esc(c.heard)} ${d ? `<span class="ipa">/${d.h}/</span>` : ""}
-          ${d && d.why.length ? `<span class="muted">· ${esc(d.why.join("；"))}</span>` : ""}`}</div>
+          ${c.heard === c.chosen ? `<span class="muted">${t("noteConfirmed")}</span>` : `
+          <span class="muted">${t("heardAs")}</span> ${esc(c.heard)} ${d ? `<span class="ipa">/${d.h}/</span>` : ""}
+          ${d && d.why.length ? `<span class="muted">· ${esc(d.why.join(t("sep")))}</span>` : ""}`}</div>
         <div class="btns">
-          <button class="play" data-say="${esc(c.chosen)}">▶ 标准</button>
-          ${c.recording_id ? `<button class="play" data-word="${c.word_id}">▶ 原声</button>
-          <button class="link" data-goto="${c.recording_id}" data-t="${c.start}">去原文</button>` : ""}
+          <button class="play" data-say="${esc(c.chosen)}">${t("playStd")}</button>
+          ${c.recording_id ? `<button class="play" data-word="${c.word_id}">${t("playOrig")}</button>
+          <button class="link" data-goto="${c.recording_id}" data-t="${c.start}">${t("gotoText")}</button>` : ""}
         </div>
-        <div class="meta">${esc(c.sentence)} · ${esc(c.recording || "（录音已删除）")} ${fmt(c.start)} · ${esc(c.speaker || "")} · ${esc(c.created_at)}</div>
+        <div class="meta">${esc(c.sentence)} · ${esc(c.recording || t("recDeleted"))} ${fmt(c.start)} · ${esc(c.speaker || "")} · ${esc(c.created_at)}</div>
       </div>`;
-    }).join("") : `<div class="empty">还没有纠错记录。在转写里点橙色下划线的词，选出正确的词就会记到这里。</div>`}</div>`;
+    }).join("") : `<div class="empty">${t("noNotes")}</div>`}</div>`;
   $("#main").querySelectorAll("[data-say]").forEach(b => b.onclick = () => sayWord(b.dataset.say));
   $("#main").querySelectorAll("[data-word]").forEach(b => b.onclick = () => playWord(+b.dataset.word));
   $("#main").querySelectorAll("[data-goto]").forEach(b => b.onclick = e => { e.stopPropagation(); openRec(+b.dataset.goto, +b.dataset.t); });
@@ -894,10 +1050,10 @@ function showLive() {
   $("main").classList.remove("mode-turns");
   $("#main").innerHTML = `<div class="live">
     <div class="live-head">
-      <button class="big start" id="liveToggle">开始录音</button>
+      <button class="big start" id="liveToggle">${t("startRec")}</button>
       <span class="clock" id="liveClock">0:00</span>
       <div class="meter"><div id="liveLevel"></div></div>
-      <span class="status" id="liveStatus">用麦克风录音，边录边转写并识别说话人。停止后自动保存为一条录音。</span>
+      <span class="status" id="liveStatus">${t("liveHint")}</span>
     </div>
     <div class="lines" id="liveLines"></div>
     <div class="partial" id="livePartial"></div>
@@ -923,10 +1079,10 @@ const WORKLET = `class Cap extends AudioWorkletProcessor {
 async function startLive() {
   try {
     live.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: true } });
-  } catch (e) { toast("拿不到麦克风：" + e.message); return; }
+  } catch (e) { toast(t("micFail", { msg: e.message })); return; }
   try {
     live.id = (await api("/api/live/start", { method: "POST", body: { threshold: state.threshold } })).id;
-  } catch (e) { live.stream.getTracks().forEach(t => t.stop()); toast("出错：" + e.message); return; }
+  } catch (e) { live.stream.getTracks().forEach(tr => tr.stop()); toast(t("error", { msg: e.message })); return; }
   live.ctx = new AudioContext();
   live.rate = live.ctx.sampleRate;
   await live.ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })));
@@ -939,8 +1095,8 @@ async function startLive() {
   };
   src.connect(live.node);
   Object.assign(live, { on: true, segs: [], partial: "", t0: Date.now() });
-  $("#liveToggle").textContent = "停止"; $("#liveToggle").className = "big stop";
-  $("#liveStatus").innerHTML = `<span class="dot" style="display:inline-block"></span> 正在录音`;
+  $("#liveToggle").textContent = t("stop"); $("#liveToggle").className = "big stop";
+  $("#liveStatus").innerHTML = `<span class="dot" style="display:inline-block"></span> ${t("recordingNow")}`;
   $("#liveBtn").disabled = true;
   live.timer = setInterval(() => {
     const c = $("#liveClock"); if (c) c.textContent = fmt((Date.now() - live.t0) / 1000);
@@ -975,7 +1131,7 @@ async function sendLive() {
     live.segs.push(...data.committed); live.partial = data.partial;
     renderLive();
     const p = $("#livePartial"); if (p) p.scrollIntoView({ block: "nearest" });
-  } catch (e) { toast("转写出错：" + e.message); }
+  } catch (e) { toast(t("transcribeErr", { msg: e.message })); }
   live.inflight = false;
 }
 
@@ -985,20 +1141,20 @@ async function stopLive() {
   live.node?.disconnect(); live.stream?.getTracks().forEach(t => t.stop()); await live.ctx?.close();
   $("#liveBtn").disabled = false;
   const btn = $("#liveToggle");
-  if (btn) { btn.textContent = "开始录音"; btn.className = "big start"; }
-  await busy("正在转写最后一段并保存…", async () => {
+  if (btn) { btn.textContent = t("startRec"); btn.className = "big start"; }
+  await busy(t("finishing"), async () => {
     while (live.inflight) await new Promise(r => setTimeout(r, 100));
     await sendLive();
     const r = await api(`/api/live/${live.id}/stop`, { method: "POST", body: {} });
     live.id = null;
-    if (r.recording) { await loadRecs(); openRec(r.recording); pollJobs(); toast("已保存为一条录音，可以点“改名”起个名字"); }
-    else { live.segs.push(...r.committed); renderLive(); toast("录音太短，没有保存"); }
+    if (r.recording) { await loadRecs(); openRec(r.recording); pollJobs(); toast(t("liveSaved")); }
+    else { live.segs.push(...r.committed); renderLive(); toast(t("tooShort")); }
   });
 }
 
 (async () => {
   try { await Promise.all([loadRecs(), loadSpeakers()]); pollJobs(); }
-  catch (e) { toast("连不上本地服务：" + e.message); return; }
+  catch (e) { toast(t("noServer", { msg: e.message })); return; }
   if (state.recs.length) openRec(state.recs[state.recs.length - 1].id);
 })();
 </script>

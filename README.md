@@ -158,30 +158,32 @@ more of their speech works best.
 ## Web UI
 
 ```bash
-recorder ui --model large-v3 --hotwords "Logan"
+recorder ui                                   # http://127.0.0.1:8765
+recorder ui --model large-v3 --hotwords "PyTorch Kubernetes"
 ```
 
-The server listens on localhost only. Whisper and the speaker model run one job at a time in a
-background queue, which the page shows under 后台任务.
+The server listens on localhost only. The interface is in English or Chinese, following the
+browser's language; the button at the top right switches it. Whisper and the speaker model run
+one job at a time in a background queue, which the page lists under Background jobs.
 
 - **Browse and play.** Recordings are grouped by day with their start times. Click a time or a
   word to play from there. Switch between segments and merged speaker turns, and search.
-- **Import.** Use 导入 or drag files onto the page. Files are copied into the library and
+- **Import.** Click Import or drag files onto the page. Files are copied into the library and
   transcribed in the background.
-- **Live recording.** 实时录音 transcribes the microphone as you talk and saves a normal recording
-  when you stop.
-- **Manage.** Rename a recording (改名), delete it (删除; the audio goes too if it is in the
-  library), or set its start time.
-- **Speakers.** 说话人 lists and deletes voiceprints and tunes the threshold. Tick segments in a
+- **Record live.** Transcribes the microphone as you talk and saves a normal recording when you
+  stop.
+- **Manage.** Rename a recording, set its start time, or delete it (the audio file goes too if it
+  is in the library).
+- **Speakers.** Lists and deletes voiceprints and tunes the threshold. Tick segments in a
   transcript to enroll that person.
 - **Unsure words** are underlined in orange. Click one for up to 4 candidates, each with its IPA:
   Whisper re-decoding that spot at higher temperatures, plus dictionary words one or two sounds
   away. Pick one, type another, or confirm the original. Candidates and word times are worked out
   once per recording in the background, so the popup opens instantly.
-- **纠错本 (notebook).** Every corrected or confirmed word, with its IPA against what Whisper
-  heard and the sounds that differ (e.g. /θ/ said as /s/). Play your original audio, cut to the
-  aligned word, next to a reference: a human recording from Wiktionary (via dictionaryapi.dev), or
-  an American female or male voice (Kokoro-82M). 导出 downloads the list as Markdown.
+- **Notebook.** Every corrected or confirmed word, with its IPA against what Whisper heard and
+  the sounds that differ (e.g. /θ/ said as /s/). Play your original audio, cut to the aligned
+  word, next to a reference: a human recording from Wiktionary (via dictionaryapi.dev), or an
+  American female or male voice (Kokoro-82M). Export Markdown downloads the list.
 
 ## Python API
 

@@ -333,7 +333,9 @@ def main(argv: list[str] | None = None) -> None:
     t.add_argument(
         "--prompt", default=None, help="initial prompt, e.g. a sentence with your jargon"
     )
-    t.add_argument("--hotwords", default=None, help='names/terms to favour, e.g. "Logan nRF52840"')
+    t.add_argument(
+        "--hotwords", default=None, help='names/terms to favour, e.g. "PyTorch Kubernetes"'
+    )
     t.add_argument(
         "--reprocess", action="store_true", help="re-transcribe files already in the database"
     )
@@ -393,7 +395,7 @@ def main(argv: list[str] | None = None) -> None:
     u.add_argument("--device", default="auto", help="auto / cuda / cpu")
     u.add_argument("--model", default="large-v3", help="Whisper model for imports and live")
     u.add_argument("--language", default=None, help="force language, e.g. en / zh")
-    u.add_argument("--hotwords", default=None, help='names/terms to favour, e.g. "Logan"')
+    u.add_argument("--hotwords", default=None, help='names/terms to favour, e.g. "PyTorch"')
     u.add_argument(
         "--library", default=None, help="where imports go (default: recordings/ by the db)"
     )
