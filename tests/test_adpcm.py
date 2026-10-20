@@ -51,11 +51,12 @@ def test_decodes_like_ffmpeg(tmp_path):
 def test_firmware_encoder_round_trip(tmp_path):
     """Compile the firmware's encoder and check our decoder gets the sound back."""
     src = tmp_path / "enc.cpp"
-    src.write_text(
+    src.write_text(  # files, not stdin/stdout: those are text mode on Windows
         '#include "adpcm.h"\n#include <stdio.h>\n'
-        "int main() { int16_t x[505]; uint8_t out[256]; Adpcm s;\n"
-        "  while (fread(x, 2, 505, stdin) == 505) { adpcmBlock(s, x, out, 256, 0);"
-        " fwrite(out, 1, 256, stdout); } }\n"
+        "int main(int argc, char** argv) { int16_t x[505]; uint8_t out[256]; Adpcm s;\n"
+        '  FILE* in = fopen(argv[1], "rb"); FILE* o = fopen(argv[2], "wb");\n'
+        "  while (fread(x, 2, 505, in) == 505) { adpcmBlock(s, x, out, 256, 0);"
+        " fwrite(out, 1, 256, o); }\n  fclose(o); }\n"
     )
     exe = tmp_path / "enc"
     cc = shutil.which("g++") or shutil.which("c++")
@@ -64,7 +65,9 @@ def test_firmware_encoder_round_trip(tmp_path):
     subprocess.run([cc, "-I", str(FIRMWARE), "-o", str(exe), str(src)], check=True)
     t = np.arange(505 * 40) / 16000
     x = (8000 * np.sin(2 * np.pi * 440 * t) * np.sin(2 * np.pi * 3 * t)).astype("<i2")
-    enc = subprocess.run([str(exe)], input=x.tobytes(), capture_output=True, check=True).stdout
+    (tmp_path / "x.raw").write_bytes(x.tobytes())
+    subprocess.run([str(exe), str(tmp_path / "x.raw"), str(tmp_path / "x.adpcm")], check=True)
+    enc = (tmp_path / "x.adpcm").read_bytes()
     assert len(enc) == 256 * 40
     y = np.concatenate([decode_block(enc[i : i + 256]) for i in range(0, len(enc), 256)])
     noise = np.sqrt(np.mean((y.astype(float) - x) ** 2))
