@@ -6,7 +6,8 @@ itself, mounted over USB as a drive. Device convention:
 
     <drive>/recorder-device.json     {"id": "..."}  marks the drive as a recorder
     <drive>/REC/20261016T091500.wav  one file per recording, named by its local
-                                     start time (from the device's RTC)
+                                     start time (from the device's clock)
+    <drive>/REC/20261016/091500.wav  the same, for firmware limited to 8.3 names
 """
 
 from __future__ import annotations
@@ -83,9 +84,17 @@ def media_started_at(path: str | Path) -> str | None:
         return None
 
 
+def _from_date_folder(path: Path) -> str | None:
+    """REC/20261016/091500.wav (or 091500A.wav, a second file in the same second)."""
+    if re.fullmatch(r"\d{8}", path.parent.name) and re.fullmatch(r"\d{6}[A-Za-z]?", path.stem):
+        return parse_started_at(f"{path.parent.name}T{path.stem[:6]}")
+    return None
+
+
 def started_at_of(path: str | Path) -> str | None:
-    """When a recording started: from its name, else from its metadata."""
-    return parse_started_at(Path(path).name) or media_started_at(path)
+    """When a recording started: from its name (or date folder), else from its metadata."""
+    path = Path(path)
+    return parse_started_at(path.name) or _from_date_folder(path) or media_started_at(path)
 
 
 class FolderSource:

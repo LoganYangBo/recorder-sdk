@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from recorder import FolderSource, Pipeline, Segment, Store, Syncer, Transcript, find_devices
-from recorder.sync import parse_started_at
+from recorder.sync import parse_started_at, started_at_of
 
 
 @pytest.mark.parametrize(
@@ -22,6 +22,20 @@ from recorder.sync import parse_started_at
 )
 def test_parse_started_at(name, expected):
     assert parse_started_at(name) == expected
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("REC/20261020/093000.WAV", "2026-10-20T09:30:00"),
+        ("REC/20261020/093000A.WAV", "2026-10-20T09:30:00"),  # second file in the same second
+        ("REC/20261020T093000.wav", "2026-10-20T09:30:00"),
+        ("REC/NOTIME/00000001.WAV", None),
+        ("REC/20261020/notes.wav", None),
+    ],
+)
+def test_started_at_of_date_folders(path, expected):
+    assert started_at_of(path) == expected
 
 
 def test_parse_started_at_converts_utc_to_local(monkeypatch):
