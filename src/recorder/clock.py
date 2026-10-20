@@ -4,7 +4,8 @@ The recorder (firmware/recorder) has no battery-backed clock, so it learns the t
 computer whenever it is plugged in, and keeps it while it stays switched on. One line each
 way, 115200 baud:
 
-    ?            -> RECORDER 1 <20261020T093000|unset> <REC|PAUSED|FAILED> <file> dropped=<n>
+    ?            -> RECORDER 2 <20261020T093000|unset> <LISTEN|REC|PAUSED|FAILED> <file|->
+                    dropped=<n> level=<sound level now> floor=<noise floor>
     T<seconds>   -> OK 20261020T093000
 
 <seconds> is the local wall-clock time counted as if it were UTC, so the device names files in

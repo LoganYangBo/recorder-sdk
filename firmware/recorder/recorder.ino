@@ -1,9 +1,11 @@
-// Recorder firmware v1 for the Seeed XIAO nRF52840 Sense.
+// Recorder firmware v2 for the Seeed XIAO nRF52840 Sense.
 // Board package: "Seeed nRF52 mbed-enabled Boards", board "XIAO nRF52840 Sense".
 //
-// Records the onboard PDM mic continuously to the microSD card as 16 kHz mono 16-bit WAV,
-// one file per 10 minutes. The button pauses and resumes. Wiring (see firmware/README.md):
-// SD on SPI (D8 SCK, D9 MISO, D10 MOSI, CS on D2), button between D1 and GND.
+// Listens to the onboard PDM mic all the time and records to the microSD card only while
+// there is sound: a recording starts when the level rises well above the room's noise floor
+// (keeping the second before it), and ends after 10 s of quiet. 16 kHz mono 16-bit WAV, at
+// most 10 minutes per file. The button pauses and resumes listening. Wiring (see
+// firmware/README.md): SD on SPI (D8 SCK, D9 MISO, D10 MOSI, CS on D2), button between D1 and GND.
 //
 // Files are named by local start time, REC/20261020/093000.WAV (the SD library only does
 // 8.3 names, so the date is the folder). Without a clock they go to REC/NOTIME/00000001.WAV.
@@ -20,28 +22,41 @@ extern "C" void set_time(time_t t);  // mbed's RTC (lives on while powered)
 
 const uint32_t SAMPLE_RATE = 16000;
 const uint32_t BYTES_PER_SEC = SAMPLE_RATE * 2;
-const uint32_t CHUNK_BYTES = BYTES_PER_SEC * 600;  // a new file every 10 minutes
+const uint32_t CHUNK_BYTES = BYTES_PER_SEC * 600;  // at most 10 minutes per file
 const uint32_t FLUSH_BYTES = BYTES_PER_SEC * 30;   // header + flush every 30 s: a power cut loses at most this
 const uint32_t WRITE_BLOCK = 4096;                 // bytes per SD write (128 ms of audio)
 const int SD_CS = D2;
 const int BUTTON = D1;
 const time_t VALID_AFTER = 1700000000;  // anything earlier means the clock was never set
 
-// Ring buffer between the PDM interrupt and the SD writes: 2 s of audio covers SD stalls and
-// closing/opening files. Indices run freely; the size is a power of two.
-const uint32_t RING_SIZE = 65536;
-uint8_t ring[RING_SIZE];
+// Sound detection, on 16 ms frames. Tune with the level= and floor= that `?` reports.
+const uint32_t FRAME = 512;                          // bytes: 256 samples
+const uint32_t PREROLL_BYTES = BYTES_PER_SEC;        // keep 1 s before the sound that starts a recording
+const uint32_t HANGOVER_BYTES = BYTES_PER_SEC * 10;  // end it after 10 s without sound
+const float SOUND_RATIO = 3.0;  // a frame is sound when this many times above the noise floor...
+const float MIN_LEVEL = 30;     // ...and at least this loud (mean distance from silence)
+const int START_FRAMES = 5;     // sound frames among the last 16 that start a recording
+
+// Ring buffer between the PDM interrupt and the SD writes: 4 s of audio holds the pre-roll
+// plus SD stalls and opening files. Indices run freely; the size is a power of two. `scan` is
+// how far sound detection has got; `tail` how far the SD writes have (or, while listening,
+// the start of the pre-roll).
+const uint32_t RING_SIZE = 131072;
+alignas(4) uint8_t ring[RING_SIZE];
 volatile uint32_t head = 0, tail = 0, dropped = 0;
+uint32_t scan = 0, lastSoundAt = 0;
+uint16_t recent = 0;  // one bit per recent frame, 1 = sound
+float level = 0, noiseFloor = 0;
 int16_t pdmBuf[256];
 
-enum State { PAUSED, RECORDING, FAILED };
+enum State { PAUSED, LISTENING, RECORDING, FAILED };
 State state = PAUSED;
 File wav;
 uint32_t dataBytes = 0, sinceFlush = 0, notimeIndex = 0;
 char path[32];
 uint8_t block[WRITE_BLOCK];
 uint32_t feedbackUntil = 0;
-bool feedbackStart = false;
+bool feedbackOn = false;
 
 void onPDMdata() {
   int n = PDM.available();
@@ -64,6 +79,26 @@ void take(uint8_t* out, uint32_t n) {
   memcpy(out, ring + pos, first);
   memcpy(out + first, ring, n - first);
   tail += n;
+}
+
+// Looks at the frame at `scan` (frames never wrap: scan steps by FRAME, which divides
+// RING_SIZE) and tells whether it is sound. The noise floor follows quiet quickly and loud
+// slowly, so a room that stays louder for a minute or so becomes the new quiet.
+bool soundFrame() {
+  const int16_t* x = (const int16_t*)(ring + (scan & (RING_SIZE - 1)));
+  const int n = FRAME / 2;
+  int32_t sum = 0;
+  for (int i = 0; i < n; i++) sum += x[i];
+  int32_t mean = sum / n;
+  uint32_t dist = 0;
+  for (int i = 0; i < n; i++) dist += abs(x[i] - mean);
+  level = (float)dist / n;
+  scan += FRAME;
+  if (noiseFloor == 0) noiseFloor = level;
+  bool sound = level > noiseFloor * SOUND_RATIO && level > MIN_LEVEL;
+  float rate = level < noiseFloor ? 0.05f : sound ? 0.0002f : 0.001f;
+  noiseFloor += (level - noiseFloor) * rate;
+  return sound;
 }
 
 // ---- clock ----
@@ -99,9 +134,10 @@ void writeHeader(File& f, uint32_t bytes) {
   put32(f, bytes);
 }
 
-void nextPath() {
+// The file for audio that started `back` seconds ago.
+void nextPath(uint32_t back) {
   if (clockValid()) {
-    time_t t = time(NULL);
+    time_t t = time(NULL) - back;
     struct tm* g = gmtime(&t);
     char dir[16];
     snprintf(dir, sizeof(dir), "REC/%04d%02d%02d", g->tm_year + 1900, g->tm_mon + 1, g->tm_mday);
@@ -119,7 +155,7 @@ void nextPath() {
 }
 
 bool startFile() {
-  nextPath();
+  nextPath((head - tail) / BYTES_PER_SEC);  // what's still buffered started that long ago
   File f = SD.open(path, FILE_WRITE);
   if (!f) return false;
   writeHeader(f, 0);
@@ -158,6 +194,18 @@ bool writeBlock(uint32_t n) {
   return true;
 }
 
+// Writes the buffered audio up to `end` and closes the file.
+bool drainAndFinish(uint32_t end) {
+  uint32_t left = end - tail;
+  while (left > 0) {
+    uint32_t n = min(left, WRITE_BLOCK);
+    if (!writeBlock(n)) return false;
+    left -= n;
+  }
+  finishFile();
+  return true;
+}
+
 // ---- states ----
 
 void fail() {
@@ -166,36 +214,43 @@ void fail() {
   state = FAILED;
 }
 
-void startRecording() {
-  if (!startFile()) return fail();
-  head = tail = 0;
+void startListening() {
+  head = tail = scan = 0;
+  recent = 0;
+  noiseFloor = 0;  // learn the room again
   if (!PDM.begin(1, SAMPLE_RATE)) return fail();
-  state = RECORDING;
+  state = LISTENING;
 }
 
-void stopRecording() {
+void pause() {
   PDM.end();
-  uint32_t left = head - tail;
-  while (left > 0) {  // keep what's still in the buffer
-    uint32_t n = min(left, WRITE_BLOCK);
-    if (!writeBlock(n)) return fail();
-    left -= n;
-  }
-  finishFile();
+  if (state == RECORDING && !drainAndFinish(head)) return fail();
   state = PAUSED;
 }
 
+void startSegment() {
+  if (!startFile()) return fail();
+  lastSoundAt = scan;
+  state = RECORDING;
+}
+
+void endSegment() {
+  if (!drainAndFinish(scan)) return fail();  // the rest is the next pre-roll
+  recent = 0;
+  state = LISTENING;
+}
+
 void onPress() {
-  if (state == RECORDING) {
-    stopRecording();
+  if (state == LISTENING || state == RECORDING) {
+    pause();
   } else {
     if (state == FAILED) {  // card back in? start over
       SD.end();
       if (!SD.begin(SD_CS)) return;
     }
-    startRecording();
+    startListening();
   }
-  feedbackStart = state == RECORDING;
+  feedbackOn = state != PAUSED;
   feedbackUntil = millis() + 600;
 }
 
@@ -215,18 +270,19 @@ void handleButton() {
   }
 }
 
-// LED (on = LOW): recording blips every 5 s (twice if the clock isn't set), paused is dark,
-// a failure (no card, card full) blinks fast. After a press: solid = recording, two flashes = paused.
+// LED (on = LOW): listening blips every 5 s, recording every second (each blip doubled if the
+// clock isn't set), paused is dark, a failure (no card, card full) blinks fast.
+// After a press: solid = listening, two flashes = paused.
 void updateLed() {
   uint32_t ms = millis();
   bool on;
   if ((int32_t)(feedbackUntil - ms) > 0) {
     uint32_t p = 600 - (feedbackUntil - ms);
-    on = feedbackStart || p < 100 || (p >= 200 && p < 300);
+    on = feedbackOn || p < 100 || (p >= 200 && p < 300);
   } else if (state == FAILED) {
     on = (ms / 100) % 2;
-  } else if (state == RECORDING) {
-    uint32_t p = ms % 5000;  // blips long enough to survive a loop busy with an SD write
+  } else if (state == LISTENING || state == RECORDING) {
+    uint32_t p = ms % (state == RECORDING ? 1000 : 5000);  // long blips: the loop may be busy writing
     on = p < 150 || (!clockValid() && p >= 400 && p < 550);
   } else {
     on = false;
@@ -235,7 +291,8 @@ void updateLed() {
 }
 
 // One line per command, see src/recorder/clock.py:
-//   ?           -> RECORDER 1 <20261020T093000|unset> <REC|PAUSED|FAILED> <file> dropped=<n>
+//   ?           -> RECORDER 2 <20261020T093000|unset> <LISTEN|REC|PAUSED|FAILED> <file|->
+//                  dropped=<n> level=<now> floor=<noise floor>
 //   T<seconds>  -> OK 20261020T093000   (local wall-clock time, counted as if it were UTC)
 void command(const char* line) {
   char now[20];
@@ -250,21 +307,25 @@ void command(const char* line) {
     stamp(now, sizeof(now));
     Serial.print("OK ");  // answer first: switching files below takes a while
     Serial.println(now);
-    if (state == RECORDING && !wasValid) {  // start a properly named file right away
+    if (state == RECORDING && !wasValid) {  // go on in a properly named file
       finishFile();
       if (!startFile()) fail();
     }
   } else if (line[0] == '?') {
     stamp(now, sizeof(now));
-    const char* names[] = {"PAUSED", "REC", "FAILED"};
-    Serial.print("RECORDER 1 ");
+    const char* names[] = {"PAUSED", "LISTEN", "REC", "FAILED"};
+    Serial.print("RECORDER 2 ");
     Serial.print(now);
     Serial.print(" ");
     Serial.print(names[state]);
     Serial.print(" ");
     Serial.print(state == RECORDING ? path : "-");
     Serial.print(" dropped=");
-    Serial.println(dropped);
+    Serial.print(dropped);
+    Serial.print(" level=");
+    Serial.print(level, 0);
+    Serial.print(" floor=");
+    Serial.println(noiseFloor, 0);
   }
 }
 
@@ -295,14 +356,26 @@ void setup() {
     state = FAILED;
     return;
   }
-  startRecording();
+  startListening();
 }
 
 void loop() {
   handleSerial();
   handleButton();
   updateLed();
-  if (state == RECORDING && head - tail >= WRITE_BLOCK) {
+  while ((state == LISTENING || state == RECORDING) && head - scan >= FRAME) {
+    bool sound = soundFrame();
+    recent = (recent << 1) | sound;
+    if (state == LISTENING) {
+      if (scan - tail > PREROLL_BYTES) tail = scan - PREROLL_BYTES;  // forget older audio
+      if (__builtin_popcount(recent) >= START_FRAMES) startSegment();
+    } else if (sound) {
+      lastSoundAt = scan;
+    } else if (scan - lastSoundAt > HANGOVER_BYTES) {
+      endSegment();
+    }
+  }
+  if (state == RECORDING && scan - tail >= WRITE_BLOCK) {  // writes never pass detection
     if (!writeBlock(WRITE_BLOCK)) fail();
   } else {
     delay(10);  // lets the CPU sleep between blocks
