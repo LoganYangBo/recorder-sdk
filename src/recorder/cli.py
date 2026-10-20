@@ -137,6 +137,38 @@ class _LazyAligner:
         return self.aligner
 
 
+class _ClockSetter:
+    """Sets the clock of each recorder once when it shows up on USB (needs pyserial)."""
+
+    def __init__(self):
+        self.seen: set[str] = set()
+
+    def check(self) -> None:
+        try:
+            from .clock import recorder_ports, set_clock
+
+            ports = set(recorder_ports())
+        except ImportError:
+            return
+        self.seen &= ports  # unplugged: set it again next time
+        for port, stamp in set_clock(sorted(ports - self.seen)):
+            print(f"recorder clock set to {stamp} ({port})")
+            self.seen.add(port)
+
+
+def cmd_settime(args) -> None:
+    try:
+        from .clock import set_clock
+
+        done = set_clock(log=print)
+    except ImportError:
+        raise SystemExit('needs pyserial: pip install "recorder[device]"')
+    if not done:
+        raise SystemExit("no recorder answered: switch it on, plug it in, close the serial monitor")
+    for port, stamp in done:
+        print(f"{port}: clock set to {stamp}")
+
+
 def cmd_sync(args) -> None:
     import time
 
@@ -168,6 +200,8 @@ def cmd_sync(args) -> None:
         print(f"{getattr(source, 'root', '')}: " + ", ".join(f"{n} {k}" for k, n in counts.items()))
         return results
 
+    clocks = _ClockSetter()
+    clocks.check()
     with Store(args.db) as store:
         if args.source:
             run(FolderSource(args.source), store)
@@ -183,6 +217,7 @@ def cmd_sync(args) -> None:
         synced: set[str] = set()  # devices synced since they were plugged in
         try:
             while True:
+                clocks.check()
                 devices = {d.id: d for d in find_devices()}
                 for dev_id, d in devices.items():
                     if dev_id not in synced:
@@ -427,6 +462,9 @@ def main(argv: list[str] | None = None) -> None:
     sy.add_argument("--no-suggest", action="store_true")
     sy.add_argument("--threshold", type=float, default=0.3, help="min voiceprint similarity")
     sy.set_defaults(func=cmd_sync)
+
+    tm = sub.add_parser("settime", help="set the recorder's clock over USB (needs pyserial)")
+    tm.set_defaults(func=cmd_settime)
 
     dt = sub.add_parser("dates", help="fill in start times from file names / metadata")
     dt.add_argument("--force", action="store_true", help="also redo recordings that have one")

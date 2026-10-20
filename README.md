@@ -70,6 +70,7 @@ pip install -e ".[whisper,speaker,learn,tts,dev]"
 | `speaker` | Speaker labels and forced alignment                      | SpeechBrain, torchaudio (torch)  |
 | `learn`   | IPA, sound-alike candidates, phoneme diffs               | cmudict                          |
 | `tts`     | Synthesised female and male reference voices             | kokoro-onnx                      |
+| `device`  | Setting the recorder's clock over USB                    | pyserial                         |
 | `dev`     | Tests and linting                                        | pytest, ruff                     |
 
 **GPU.** faster-whisper needs CUDA 12 cuBLAS and cuDNN 9. If they aren't installed system-wide
@@ -113,7 +114,12 @@ The recorder mounts as a USB drive:
 ```
 <drive>/recorder-device.json       {"id": "..."}  marks the drive as a recorder
 <drive>/REC/20261016T091500.wav    one file per recording, named by its local start time
+<drive>/REC/20261016/091500.wav    the same, for firmware limited to 8.3 names
 ```
+
+The firmware in [`firmware/`](firmware/README.md) writes the second form. The device has no
+battery-backed clock: `recorder settime` sets it over USB serial, and `recorder sync --watch`
+does so whenever the device is plugged in (both need the `device` extra).
 
 `find_devices()` looks for the marker on Windows drive letters and under `/media`, `/run/media`,
 `/mnt` and `/Volumes`. Other timestamp formats work too (`20261016_091500`,
@@ -246,6 +252,7 @@ with Store("recorder.db") as store:
 |---------|---------|
 | `transcribe PATH...` | Transcribe files or folders. `--model`, `--device`, `--compute-type`, `--language`, `--prompt`, `--hotwords`, `--reprocess`, `--no-suggest` |
 | `sync [SOURCE]` | Sync the device or a folder. `--watch`, `--interval`, `--library`, `--delete`, `--keep-wav`, `--retry` |
+| `settime` | Set the recorder's clock over USB |
 | `status` | Synced and failed files |
 | `dates [--force]` | Fill in start times from file names or metadata |
 | `list` | Recordings with their start times |
@@ -281,6 +288,7 @@ can tell which recordings are worth re-running after a change.
 |--------|------|
 | `api.py` | `Recorder`: the read API for apps |
 | `sync.py` | Audio sources and start-time detection |
+| `clock.py` | Setting the recorder's clock over USB serial |
 | `ingest.py` | `Syncer`: copy, compress, process and track each file |
 | `pipeline.py` | Transcribe, label, store one file |
 | `transcribe.py` | faster-whisper wrapper; alternative decodes for unsure words |
