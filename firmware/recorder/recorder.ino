@@ -226,8 +226,8 @@ void updateLed() {
   } else if (state == FAILED) {
     on = (ms / 100) % 2;
   } else if (state == RECORDING) {
-    uint32_t p = ms % 5000;
-    on = p < 30 || (!clockValid() && p >= 200 && p < 230);
+    uint32_t p = ms % 5000;  // blips long enough to survive a loop busy with an SD write
+    on = p < 150 || (!clockValid() && p >= 400 && p < 550);
   } else {
     on = false;
   }
