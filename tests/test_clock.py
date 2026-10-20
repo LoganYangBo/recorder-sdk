@@ -61,3 +61,11 @@ def test_set_clock_asks_again_when_the_first_line_is_lost():
     assert set_clock(["COM3"], open_port=lambda name: port, settle=0) == [
         ("COM3", "20261020T093000")
     ]
+
+
+def test_set_clock_checks_whether_a_silent_device_took_the_time():
+    answers = iter(["RECORDER 1 unset REC - dropped=0", "", "RECORDER 1 20261020T093000 REC"])
+    port = FakePort(lambda line: next(answers))
+    assert set_clock(["COM3"], open_port=lambda name: port, settle=0) == [
+        ("COM3", "20261020T093000")
+    ]

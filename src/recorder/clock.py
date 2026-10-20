@@ -70,6 +70,10 @@ def set_clock(
                     log(f"{name}: not a recorder (answered {hello!r})")
                     continue
                 reply = _ask(port, f"T{local_epoch(now)}")
+                if not reply.startswith("OK "):  # busy switching files: did it take?
+                    fields = _ask(port, "?").split()
+                    if len(fields) > 2 and fields[0] == "RECORDER" and fields[2] != "unset":
+                        reply = f"OK {fields[2]}"
         except OSError as e:  # busy (the Arduino serial monitor has it), or unplugged meanwhile
             log(f"{name}: can't open ({e})")
             continue

@@ -247,13 +247,13 @@ void command(const char* line) {
     }
     bool wasValid = clockValid();
     set_time(t);
+    stamp(now, sizeof(now));
+    Serial.print("OK ");  // answer first: switching files below takes a while
+    Serial.println(now);
     if (state == RECORDING && !wasValid) {  // start a properly named file right away
       finishFile();
       if (!startFile()) fail();
     }
-    stamp(now, sizeof(now));
-    Serial.print("OK ");
-    Serial.println(now);
   } else if (line[0] == '?') {
     stamp(now, sizeof(now));
     const char* names[] = {"PAUSED", "REC", "FAILED"};
