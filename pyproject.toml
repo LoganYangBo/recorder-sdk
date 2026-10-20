@@ -22,8 +22,8 @@ speaker = ["speechbrain>=1.0", "torchaudio>=2.1", "faster-whisper>=1.1", "av>=11
 learn = ["cmudict>=1.0"]
 # synthesised standard pronunciations: American female / male voices (Kokoro, ONNX)
 tts = ["kokoro-onnx>=0.4"]
-# setting the recorder's clock over USB serial (recorder settime)
-device = ["pyserial>=3.5"]
+# talking to the recorder: clock over USB serial, sync and live audio over Bluetooth
+device = ["pyserial>=3.5", "bleak>=0.22"]
 dev = ["pytest>=8", "ruff", "cmudict>=1.0", "av>=11,<19"]
 
 [project.scripts]

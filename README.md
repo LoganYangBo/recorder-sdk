@@ -36,8 +36,9 @@ device / folder ──► sync ──► faster-whisper ──► speaker labels
   per-word timestamps and confidence, initial prompts and hotwords, on GPU or CPU.
 - **Speaker labels** from voiceprints (SpeechBrain ECAPA): each segment is `me`, an enrolled
   person, or `other`.
-- **Device sync** over USB. Files are deduplicated by content hash, compressed to Ogg Opus (about
-  8x smaller than WAV) and processed one at a time. A file that fails is logged and retried
+- **Device sync** over USB or Bluetooth, plus live transcription over Bluetooth. Files are
+  deduplicated by content hash, compressed to Ogg Opus (about 8x smaller than WAV) and processed
+  one at a time. A file that fails is logged and retried
   without blocking the rest.
 - **Wall-clock time** for every recording, taken from file names or metadata, so you can ask
   "what did I say on Tuesday afternoon".
@@ -105,7 +106,15 @@ recorder sync --watch         # wait for it, and sync every time it is plugged i
 recorder sync D:\phone-recs   # or any folder
 recorder sync --delete        # free the device's card once files are safely synced
 recorder status               # what was synced, and what failed
+
+recorder sync --ble --watch --delete   # over Bluetooth: every 10 minutes when it's in range
+recorder live                 # transcribe what the recorder hears, live, over Bluetooth
+recorder device               # its state, battery and recordings waiting, over Bluetooth
 ```
+
+Over Bluetooth (the `device` extra, which installs bleak) a sync sets the recorder's clock,
+downloads the finished recordings to `inbox/` next to the database (resuming an interrupted
+download), and imports them like any other source; `--delete` then removes them from the card.
 
 ### Device convention
 
@@ -117,9 +126,10 @@ The recorder mounts as a USB drive:
 <drive>/REC/20261016/091500.wav    the same, for firmware limited to 8.3 names
 ```
 
-The firmware in [`firmware/`](firmware/README.md) writes the second form. The device has no
-battery-backed clock: `recorder settime` sets it over USB serial, and `recorder sync --watch`
-does so whenever the device is plugged in (both need the `device` extra).
+The firmware in [`firmware/`](firmware/README.md) writes the second form, as IMA ADPCM WAV
+(4:1), which PyAV decodes like any WAV. The device has no battery-backed clock: every Bluetooth
+connection sets it, `recorder settime` sets it over USB serial, and `recorder sync --watch`
+does so whenever the device is plugged in (all need the `device` extra).
 
 `find_devices()` looks for the marker on Windows drive letters and under `/media`, `/run/media`,
 `/mnt` and `/Volumes`. Other timestamp formats work too (`20261016_091500`,
@@ -244,14 +254,16 @@ with Store("recorder.db") as store:
 |-----------|--------|-----------------|
 | `Transcriber` | `transcribe.py` | `WhisperTranscriber` |
 | `SpeakerLabeler` | `speaker.py` | `VoiceprintLabeler` (takes any `Embedder`, e.g. `EcapaEmbedder`), `NoopLabeler` |
-| `AudioSource` | `sync.py` | `FolderSource`, `DeviceSource`; BLE or serial transfer would be another |
+| `AudioSource` | `sync.py` | `FolderSource`, `DeviceSource` (Bluetooth sync downloads into a folder first) |
 
 ## CLI reference
 
 | Command | Purpose |
 |---------|---------|
 | `transcribe PATH...` | Transcribe files or folders. `--model`, `--device`, `--compute-type`, `--language`, `--prompt`, `--hotwords`, `--reprocess`, `--no-suggest` |
-| `sync [SOURCE]` | Sync the device or a folder. `--watch`, `--interval`, `--library`, `--delete`, `--keep-wav`, `--retry` |
+| `sync [SOURCE]` | Sync the device or a folder. `--ble`, `--watch`, `--interval`, `--library`, `--delete`, `--keep-wav`, `--retry` |
+| `live` | Live transcription from the recorder over Bluetooth. `--save` keeps it as a recording |
+| `device` | The recorder's state, battery and files, over Bluetooth |
 | `settime` | Set the recorder's clock over USB |
 | `status` | Synced and failed files |
 | `dates [--force]` | Fill in start times from file names or metadata |
@@ -289,6 +301,8 @@ can tell which recordings are worth re-running after a change.
 | `api.py` | `Recorder`: the read API for apps |
 | `sync.py` | Audio sources and start-time detection |
 | `clock.py` | Setting the recorder's clock over USB serial |
+| `ble.py` | The recorder over Bluetooth: clock, file download, live audio |
+| `adpcm.py` | Decoding the recorder's IMA ADPCM audio |
 | `ingest.py` | `Syncer`: copy, compress, process and track each file |
 | `pipeline.py` | Transcribe, label, store one file |
 | `transcribe.py` | faster-whisper wrapper; alternative decodes for unsure words |

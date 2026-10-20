@@ -1,7 +1,9 @@
 # Recorder firmware
 
 Arduino firmware for the wearable recorder: a Seeed XIAO nRF52840 Sense, a microSD module, a
-button and a LiPo battery. It listens all day and records to the card whenever there is sound; `recorder sync` picks the files up.
+button and a LiPo battery. It listens all day and records to the card whenever there is sound;
+`recorder sync --ble` fetches the files over Bluetooth (or take the card out and use
+`recorder sync`), and `recorder live` transcribes what it hears as it happens.
 
 ## Hardware
 
@@ -17,11 +19,13 @@ on Windows). The battery only charges while the switch is on.
 
 ## Upload
 
-1. Arduino IDE 2, board package **Seeed nRF52 mbed-enabled Boards** (boards manager URL
-   `https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json`). Don't also
-   install the non-mbed "Seeed nRF52 Boards": both have a board of the same name.
-2. Board **XIAO nRF52840 Sense**, open `firmware/recorder/recorder.ino`, upload. The SD and
-   PDM libraries come with the IDE and the board package.
+1. Arduino IDE 2, boards manager URL
+   `https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json`, board package
+   **Seeed nRF52 Boards** (the one *without* "mbed-enabled": it has the Bluetooth library). If
+   the mbed-enabled package is installed too, remove it, since both have a board of the same name.
+2. Board **Seeed XIAO nRF52840 Sense**, open `firmware/recorder/recorder.ino`, upload. The SD,
+   PDM and Bluetooth libraries come with the IDE and the board package. If the upload can't find
+   the board, double-press its reset button and upload again.
 
 ## Use
 
@@ -34,39 +38,62 @@ triggers it, not only speech. The button pauses and resumes listening.
 |-----|---------|
 | A blip every 5 s | Listening |
 | A blip every second | Recording |
+| Blue instead of red | Connected over Bluetooth |
 | Each blip doubled | The clock isn't set |
+| Long blips | Battery below 15% |
 | Dark | Paused (or switched off) |
 | Solid for a moment after a press | Listening started |
 | Two flashes after a press | Paused |
 | Fast blinking | No card, or the card failed or is full. Press the button to retry |
 
-Files are 16 kHz mono 16-bit WAV (115 MB per hour of sound). The header is rewritten every
-30 seconds, so a power cut loses at most the last 30 seconds.
-
-### Tuning the trigger
-
-Open the Arduino serial monitor (115200, New Line) and send `?`. The answer ends with
-`level=` (the sound right now) and `floor=` (the background noise it has learned). A frame counts
-as sound when its level is over `SOUND_RATIO` (3) times the floor and over `MIN_LEVEL` (30);
-5 such frames within a quarter second start a recording. If it triggers on too little, raise
-those two at the top of `recorder.ino`; if it misses quiet speech, lower them. `HANGOVER_BYTES`
-sets the 10 seconds of quiet that end a recording.
+Files are 16 kHz mono IMA ADPCM WAV, 4:1 compressed (about 29 MB per hour of sound). The header
+is rewritten every 30 seconds, so a power cut loses at most the last 30 seconds.
 
 ```
 REC/20261020/093000.WAV     named by local start time (the SD library only does 8.3 names)
 REC/NOTIME/00000001.WAV     recorded before the clock was set
 ```
 
+## Bluetooth
+
+The recorder advertises as **Recorder**; no pairing is needed. On the computer
+(`pip install "recorder[device]"`):
+
+```
+recorder device                          state, battery, recordings waiting
+recorder sync --ble --watch --delete     fetch and transcribe every 10 minutes while in range
+recorder live                            live transcription
+```
+
+Every connection sets the clock. Downloads resume where they stopped; the file being recorded
+comes in the next sync. The battery also shows in Windows' Bluetooth settings and in phone
+apps such as nRF Connect (standard battery service). The protocol is described in
+`src/recorder/ble.py`.
+
+## Battery
+
+The charge is estimated from the battery voltage, so it reads high while charging and jumps a
+little under load. `recorder device` shows it, as does `?` in the serial monitor
+(`bat=3.95 pct=69`).
+
 ## The clock
 
-The board has no battery-backed clock. Plug it in with the switch on and run
-`recorder settime` (or keep `recorder sync --watch` running, which sets it whenever the board
-appears); this needs `pip install "recorder[device]"`. The clock then holds as long as the switch
-stays on, so pause with the button rather than switching off. The serial protocol is described
-in `src/recorder/clock.py`.
+The board has no battery-backed clock. Bluetooth sets it on every connection; over USB, plug it
+in with the switch on and run `recorder settime` (or keep `recorder sync --watch` running). The
+clock then holds as long as the switch stays on, so pause with the button rather than switching
+off.
 
-## Syncing
+## Tuning the trigger
 
-For now, take the card out and put it in a card reader. Create `recorder-device.json` with
-`{"id": "recorder-1"}` at the card's root once (the firmware can't write that long name), then
-`recorder sync` finds it like a plugged-in recorder.
+Open the Arduino serial monitor (115200, New Line) and send `?`. The answer includes `level=`
+(the sound right now) and `floor=` (the background noise it has learned). A frame counts as sound
+when its level is over `SOUND_RATIO` (3) times the floor and over `MIN_LEVEL` (30); 5 such frames
+within a quarter second start a recording. If it triggers on too little, raise those two at the
+top of `recorder.ino`; if it misses quiet speech, lower them. `HANGOVER_BYTES` sets the
+10 seconds of quiet that end a recording.
+
+## Syncing with a card reader
+
+Still works: create `recorder-device.json` with `{"id": "recorder-1"}` at the card's root once
+(the firmware can't write that long name), then `recorder sync` finds it like a plugged-in
+recorder.
