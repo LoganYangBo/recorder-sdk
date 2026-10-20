@@ -183,6 +183,16 @@ button.rec-btn::before { content: "●"; margin-right: 5px; }
 .live .partial { color: var(--muted); font-style: italic; padding: 6px 8px; }
 .live .line { grid-template-columns: 64px 110px 1fr; }
 .live .status { color: var(--muted); font-size: 13px; }
+.dev-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.dev-card { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.dev-card .k { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.dev-card .v { font-size: 20px; font-weight: 600; }
+.dev-card .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.dev-card .meter { width: 100%; margin-top: 8px; }
+.meter.batt div { background: var(--s1); }
+.meter.batt.low div { background: var(--danger); }
+.dev-sync { margin-bottom: 18px; align-items: center; gap: 14px; }
+.device h3 { margin: 8px 0 10px; }
 
 @media (max-width: 760px) {
   .layout { grid-template-columns: 1fr; height: auto; }
@@ -206,6 +216,7 @@ button.rec-btn::before { content: "●"; margin-right: 5px; }
   <button id="importBtn" data-i18n="import"></button>
   <input type="file" id="fileIn" accept="audio/*,.m4a,.mp3,.wav,.flac,.ogg,.opus,.aac" multiple hidden>
   <button class="rec-btn" id="liveBtn" data-i18n="live"></button>
+  <button id="devBtn" data-i18n="device"></button>
   <button id="openNotes" data-i18n="notes"></button>
   <button id="openSpk" data-i18n="speakers"></button>
   <button class="link" id="langBtn"></button>
@@ -328,6 +339,17 @@ const STRINGS = {
     transcribeErr: "Transcription failed: {msg}", finishing: "Transcribing the last part and saving…",
     liveSaved: "Saved as a recording; use “Rename” to give it a name", tooShort: "Too short, not saved",
     noServer: "Can't reach the local server: {msg}", otherLang: "中文",
+    device: "Recorder", devConnect: "Connect", devDisconnect: "Disconnect", devConnecting: "Looking for the recorder over Bluetooth…",
+    devHint: "Switch the recorder on and keep it near this computer. No pairing needed.",
+    devOff: "Not connected", devOn: "Connected", devBattery: "Battery", devState: "State", devClock: "Clock",
+    devFiles: "On the card", devFilesN: "{n} recordings, {mb} MB", devFilesN1: "1 recording, {mb} MB",
+    devStates: { LISTEN: "Listening", REC: "Recording", PAUSED: "Paused", FAILED: "Card problem" },
+    devUnset: "not set", devSync: "Sync and transcribe", devDelete: "Delete from the card once synced",
+    devSyncStarted: "Syncing: progress shows on the left", devDownloading: "Downloading {i}/{n}",
+    devTranscribing: "Transcribing", devSynced: "{n} new", devLiveTitle: "Live transcription",
+    devLiveHint: "Transcribes what the recorder hears as it happens. It keeps recording to its card as usual.",
+    devLiveStart: "Start", devSave: "Save as a recording", devNoBleak: "Bluetooth needs bleak: pip install \"recorder[device]\"",
+    devLevel: "level {v} · noise floor {f}",
   },
   zh: {
     searchPh: "搜索全部转写…", import: "导入", live: "实时录音", notes: "纠错本",
@@ -396,6 +418,17 @@ const STRINGS = {
     transcribeErr: "转写出错：{msg}", finishing: "正在转写最后一段并保存…",
     liveSaved: "已保存为一条录音，可以点“改名”起个名字", tooShort: "录音太短，没有保存",
     noServer: "连不上本地服务：{msg}", otherLang: "English",
+    device: "设备", devConnect: "连接", devDisconnect: "断开", devConnecting: "正在通过蓝牙找录音设备…",
+    devHint: "打开录音设备的开关，放在电脑旁边。不用配对。",
+    devOff: "未连接", devOn: "已连接", devBattery: "电量", devState: "状态", devClock: "时钟",
+    devFiles: "卡上录音", devFilesN: "{n} 段，{mb} MB",
+    devStates: { LISTEN: "在听", REC: "在录", PAUSED: "已暂停", FAILED: "SD 卡有问题" },
+    devUnset: "未对时", devSync: "同步并转写", devDelete: "同步后从卡上删除",
+    devSyncStarted: "开始同步，进度在左边", devDownloading: "下载中 {i}/{n}",
+    devTranscribing: "转写中", devSynced: "新增 {n} 段", devLiveTitle: "实时转写",
+    devLiveHint: "录音设备听到什么就实时转成文字。设备照常往卡上录。",
+    devLiveStart: "开始", devSave: "保存为一条录音", devNoBleak: "蓝牙需要 bleak：pip install \"recorder[device]\"",
+    devLevel: "音量 {v} · 底噪 {f}",
   },
 };
 const LANG = (l => l in STRINGS ? l : (navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en")(localGet("lang", ""));
@@ -484,6 +517,7 @@ $("#recs").addEventListener("click", e => {
 });
 
 async function openRec(id, focusStart) {
+  stopDeviceView();
   state.rec = state.recs.find(r => r.id === id);
   state.selected.clear();
   state.segs = await api(`/api/recordings/${id}/segments`);
@@ -816,6 +850,11 @@ async function pollJobs() {
     jobsTimer = setTimeout(pollJobs, 2000);
 }
 function jobLabel(j, label) {
+  if (j.kind === "device") {
+    if (j.status === "running") return j.stage === "transcribing" ? t("devTranscribing")
+      : j.progress ? t("devDownloading", { i: j.progress[0], n: j.progress[1] }) : label.running;
+    return j.status === "done" ? t("devSynced", { n: j.new }) : label[j.status];
+  }
   if (j.kind !== "suggest") return label[j.status];
   if (j.status === "running") return j.progress ? t("analysingN", { i: j.progress[0], n: j.progress[1] }) : t("analysing");
   return j.status === "done" ? t("analysed") : label[j.status];
@@ -1011,7 +1050,7 @@ async function sayWord(word) {
 // ---------- correction notebook ----------
 $("#openNotes").onclick = showNotes;
 async function showNotes() {
-  closePop(); stopLiveView();
+  closePop(); stopLiveView(); stopDeviceView();
   state.rec = null;
   document.querySelectorAll(".rec").forEach(el => el.classList.remove("active"));
   const rows = await api("/api/corrections");
@@ -1045,6 +1084,7 @@ const live = { on: false, id: null, ctx: null, stream: null, node: null, buf: []
 
 $("#liveBtn").onclick = showLive;
 function showLive() {
+  stopDeviceView();
   state.rec = null;
   document.querySelectorAll(".rec").forEach(el => el.classList.remove("active"));
   $("main").classList.remove("mode-turns");
@@ -1149,6 +1189,132 @@ async function stopLive() {
     live.id = null;
     if (r.recording) { await loadRecs(); openRec(r.recording); pollJobs(); toast(t("liveSaved")); }
     else { live.segs.push(...r.committed); renderLive(); toast(t("tooShort")); }
+  });
+}
+
+// ---------- the recorder over Bluetooth ----------
+const dev = { timer: null, liveTimer: null, segs: [], partial: "", busy: false };
+
+$("#devBtn").onclick = showDevice;
+function stopDeviceView() { clearInterval(dev.timer); clearInterval(dev.liveTimer); dev.timer = dev.liveTimer = null; }
+function showDevice() {
+  closePop(); stopLiveView(); stopDeviceView();
+  state.rec = null;
+  document.querySelectorAll(".rec").forEach(el => el.classList.remove("active"));
+  $("main").classList.remove("mode-turns");
+  $("#main").innerHTML = `<div class="live device">
+    <div class="live-head">
+      <button class="big" id="devToggle">${t("devConnect")}</button>
+      <span class="status" id="devStatus">${t("devHint")}</span>
+    </div>
+    <div class="dev-cards" id="devCards"></div>
+    <div class="row dev-sync" id="devSyncRow" hidden>
+      <button class="primary" id="devSync">${t("devSync")}</button>
+      <label><input type="checkbox" id="devDelete"> ${t("devDelete")}</label>
+    </div>
+    <div id="devLiveBox" hidden>
+      <h3>${t("devLiveTitle")}</h3>
+      <div class="live-head">
+        <button class="big start" id="devLive">${t("devLiveStart")}</button>
+        <span class="clock" id="devClock">0:00</span>
+        <div class="meter"><div id="devLevel"></div></div>
+        <label><input type="checkbox" id="devSave"> ${t("devSave")}</label>
+        <span class="status">${t("devLiveHint")}</span>
+      </div>
+      <div class="lines" id="devLines"></div>
+      <div class="partial" id="devPartial"></div>
+    </div>
+  </div>`;
+  $("#devDelete").checked = localGet("devDelete", "0") === "1";
+  $("#devDelete").onchange = e => localSet("devDelete", e.target.checked ? "1" : "0");
+  $("#devToggle").onclick = toggleDevice;
+  $("#devSync").onclick = syncDevice;
+  $("#devLive").onclick = () => dev.liveTimer ? stopDeviceLive() : startDeviceLive();
+  refreshDevice();
+  dev.timer = setInterval(refreshDevice, 5000);
+}
+
+function renderDevice(d) {
+  if (!$("#devCards")) return stopDeviceView();
+  $("#devToggle").textContent = d.connected ? t("devDisconnect") : t("devConnect");
+  $("#devStatus").textContent = d.connected ? t("devOn") : d.error || t("devHint");
+  $("#devSyncRow").hidden = $("#devLiveBox").hidden = !d.connected;
+  if (d.live && !dev.liveTimer) {  // still on from before: follow it again
+    dev.segs = []; $("#devLive").textContent = t("stop"); $("#devLive").className = "big stop";
+    dev.liveTimer = setInterval(pollDeviceLive, 1000);
+  }
+  const s = d.status || {}, f = d.files;
+  const pct = s.pct != null && s.pct !== "-1" ? +s.pct : null;
+  const card = (label, value, extra = "") => `<div class="dev-card"><div class="k">${label}</div><div class="v">${value}</div>${extra}</div>`;
+  $("#devCards").innerHTML = !d.connected ? "" : [
+    card(t("devBattery"), pct == null ? "–" : `${pct}%`,
+      pct == null ? "" : `<div class="meter batt ${pct < 15 ? "low" : ""}"><div style="width:${pct}%"></div></div><div class="sub">${esc(s.bat || "")} V</div>`),
+    card(t("devState"), esc((t("devStates") || {})[s.state] || s.state || "–"),
+      s.level != null ? `<div class="sub">${t("devLevel", { v: esc(s.level), f: esc(s.floor) })}</div>` : ""),
+    card(t("devClock"), s.clock === "unset" ? t("devUnset") : esc((s.clock || "–").replace(/^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)$/, "$1-$2-$3 $4:$5:$6"))),
+    card(t("devFiles"), f ? t("devFilesN", { n: f.count, mb: (f.bytes / 1e6).toFixed(1) }) : "–"),
+  ].join("");
+}
+
+async function refreshDevice() {
+  if (dev.busy) return;
+  try { renderDevice(await api("/api/device")); } catch (e) { toast(t("error", { msg: e.message })); }
+}
+
+async function toggleDevice() {
+  const connected = $("#devToggle").textContent === t("devDisconnect");
+  dev.busy = true;
+  try {
+    if (connected) { if (dev.liveTimer) await stopDeviceLive(); renderDevice(await api("/api/device/disconnect", { method: "POST", body: {} })); }
+    else await busy(t("devConnecting"), async () => renderDevice(await api("/api/device/connect", { method: "POST", body: {} })));
+  } catch (e) { toast(t("error", { msg: e.message })); }
+  dev.busy = false;
+  if (!connected) refreshDevice();
+}
+
+async function syncDevice() {
+  try {
+    await api("/api/device/sync", { method: "POST", body: { delete: $("#devDelete").checked, threshold: state.threshold } });
+    toast(t("devSyncStarted")); pollJobs();
+  } catch (e) { toast(t("error", { msg: e.message })); }
+}
+
+function renderDeviceLive() {
+  const lines = $("#devLines"); if (!lines) return;
+  lines.innerHTML = dev.segs.map(s => `<div class="line">
+      <span class="t">${fmt(s.start)}</span><span class="who">${chip(s.speaker)}</span>
+      <span class="text">${wordsHtml(s)}</span></div>`).join("");
+  $("#devPartial").textContent = dev.partial ? dev.partial + " …" : "";
+}
+
+async function startDeviceLive() {
+  try { await api("/api/device/live/start", { method: "POST", body: { threshold: state.threshold } }); }
+  catch (e) { toast(t("error", { msg: e.message })); return; }
+  Object.assign(dev, { segs: [], partial: "" });
+  $("#devLive").textContent = t("stop"); $("#devLive").className = "big stop";
+  dev.liveTimer = setInterval(pollDeviceLive, 1000);
+  renderDeviceLive();
+}
+
+async function pollDeviceLive() {
+  try {
+    const r = await api(`/api/device/live?from=${dev.segs.length}`);
+    if (!r.on) return stopDeviceLive();
+    dev.segs.push(...r.committed); dev.partial = r.partial;
+    const c = $("#devClock"); if (c) c.textContent = fmt(r.duration);
+    const lvl = $("#devLevel"); if (lvl) lvl.style.width = Math.min(100, r.level * 400) + "%";
+    renderDeviceLive();
+  } catch (e) { toast(t("transcribeErr", { msg: e.message })); }
+}
+
+async function stopDeviceLive() {
+  clearInterval(dev.liveTimer); dev.liveTimer = null;
+  const btn = $("#devLive");
+  if (btn) { btn.textContent = t("devLiveStart"); btn.className = "big start"; }
+  await busy(t("finishing"), async () => {
+    const r = await api("/api/device/live/stop", { method: "POST", body: { save: $("#devSave")?.checked } });
+    dev.segs.push(...r.committed); dev.partial = ""; renderDeviceLive();
+    if (r.recording) { await loadRecs(); pollJobs(); toast(t("liveSaved")); }
   });
 }
 

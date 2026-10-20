@@ -65,7 +65,8 @@ recorder sync --ble --watch --delete     fetch and transcribe every 10 minutes w
 recorder live                            live transcription
 ```
 
-Every connection sets the clock. Downloads resume where they stopped; the file being recorded
+`recorder ui` has a **Recorder** (设备) page that does all of this with buttons. Every
+connection sets the clock. Downloads resume where they stopped; the file being recorded
 comes in the next sync. The battery also shows in Windows' Bluetooth settings and in phone
 apps such as nRF Connect (standard battery service). The protocol is described in
 `src/recorder/ble.py`.

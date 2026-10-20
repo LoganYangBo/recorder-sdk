@@ -112,6 +112,9 @@ recorder live                 # transcribe what the recorder hears, live, over B
 recorder device               # its state, battery and recordings waiting, over Bluetooth
 ```
 
+The web UI (`recorder ui`) has the same on its **Recorder** page: connect, see the battery,
+state, clock and recordings waiting, sync with one click, and watch live transcription.
+
 Over Bluetooth (the `device` extra, which installs bleak) a sync sets the recorder's clock,
 downloads the finished recordings to `inbox/` next to the database (resuming an interrupted
 download), and imports them like any other source; `--delete` then removes them from the card.

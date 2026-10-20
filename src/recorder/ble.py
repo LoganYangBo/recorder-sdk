@@ -20,6 +20,7 @@ client, or anything with the same write_gatt_char / start_notify methods.
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -201,3 +202,64 @@ async def download_new(
             await rec.fetch(path, size, dest)
         out.append((path, dest))
     return out
+
+
+class BleLink:
+    """A connection kept open on a background event loop, for code that isn't async (the web
+    UI). One exchange with the recorder runs at a time."""
+
+    def __init__(self, finder=find_recorder, make_client=None):
+        self._finder = finder
+        self._make_client = make_client  # device -> client; default bleak.BleakClient
+        self._loop = asyncio.new_event_loop()
+        threading.Thread(target=self._loop.run_forever, daemon=True).start()
+        self._lock = threading.Lock()
+        self.client = None
+        self.rec: BleRecorder | None = None
+
+    def _run(self, coro, timeout: float | None = None):
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
+
+    @property
+    def connected(self) -> bool:
+        return self.client is not None and bool(self.client.is_connected)
+
+    def connect(self) -> str:
+        """Find the recorder, connect and set its clock; returns the time it now reports."""
+
+        async def go():
+            dev = await self._finder()
+            if dev is None:
+                raise RecorderError("no recorder in range: switch it on and bring it close")
+            if self._make_client is None:
+                from bleak import BleakClient
+
+                client = BleakClient(dev)
+            else:
+                client = self._make_client(dev)
+            await client.connect()
+            rec = BleRecorder(client)
+            await rec.start()
+            stamp = await rec.set_clock()
+            self.client, self.rec = client, rec
+            return stamp
+
+        with self._lock:
+            return self._run(go(), 60)
+
+    def disconnect(self) -> None:
+        with self._lock:
+            client, self.client, self.rec = self.client, None, None
+            if client is not None:
+                self._run(client.disconnect(), 10)
+
+    def call(self, work, wait: bool = True):
+        """Run `await work(recorder)`; with wait=False, None at once if busy."""
+        if not self.connected:
+            raise RecorderError("the recorder isn't connected")
+        if not self._lock.acquire(blocking=wait):
+            return None
+        try:
+            return self._run(work(self.rec))
+        finally:
+            self._lock.release()

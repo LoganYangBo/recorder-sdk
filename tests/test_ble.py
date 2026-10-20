@@ -18,6 +18,13 @@ class FakeRecorder:
         self.cb = {}
         self.sent = []
         self.clock = None
+        self.is_connected = False
+
+    async def connect(self):
+        self.is_connected = True
+
+    async def disconnect(self):
+        self.is_connected = False
 
     async def start_notify(self, uuid, cb):
         self.cb[uuid] = cb
@@ -166,3 +173,27 @@ def test_live_decodes_blocks_and_counts_losses():
     assert lost == 1
     assert len(got) == 3 and all(len(b) == 17 and b.dtype == np.int16 for b in got)
     assert fake.sent[-2:] == ["S1", "S0"]
+
+
+def test_link_runs_calls_on_its_own_loop():
+    fake = FakeRecorder({"REC/A/B.WAV": b"xyz"})
+
+    async def finder():
+        return "device"
+
+    link = ble.BleLink(finder=finder, make_client=lambda dev: fake)
+    with pytest.raises(RecorderError):
+        link.call(lambda rec: rec.status())  # not connected yet
+    assert link.connect() == "20261020T093000"
+    assert link.connected and fake.sent[0].startswith("T")
+    assert link.call(lambda rec: rec.list_files()) == [("REC/A/B.WAV", 3)]
+    link.disconnect()
+    assert not link.connected and not fake.is_connected
+
+
+def test_link_without_a_recorder_in_range():
+    async def finder():
+        return None
+
+    with pytest.raises(RecorderError, match="no recorder"):
+        ble.BleLink(finder=finder).connect()
