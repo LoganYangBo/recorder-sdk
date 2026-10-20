@@ -160,7 +160,7 @@ def cmd_settime(args) -> None:
     try:
         from .clock import set_clock
 
-        done = set_clock()
+        done = set_clock(log=print)
     except ImportError:
         raise SystemExit('needs pyserial: pip install "recorder[device]"')
     if not done:

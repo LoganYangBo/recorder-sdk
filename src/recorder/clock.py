@@ -14,6 +14,7 @@ local time without knowing the time zone. Needs pyserial (the `device` extra).
 from __future__ import annotations
 
 import calendar
+import time
 from datetime import datetime
 from typing import Callable
 
@@ -43,25 +44,37 @@ def set_clock(
     ports: list[str] | None = None,
     now: datetime | None = None,
     open_port: Callable | None = None,
+    settle: float = 0.5,
+    log: Callable[[str], None] | None = None,
 ) -> list[tuple[str, str]]:
     """Send the time to every plugged-in recorder; returns (port, the time it now reports).
 
-    Ports that don't answer like a recorder are left alone."""
+    Ports that don't answer like a recorder are left alone. `log` hears what each port said."""
     if open_port is None:
         import serial
 
         def open_port(name):
-            return serial.Serial(name, BAUD, timeout=2)
+            return serial.Serial(name, BAUD, timeout=1)
 
+    log = log or (lambda msg: None)
     done = []
     for name in recorder_ports() if ports is None else ports:
         try:
             with open_port(name) as port:
-                if not _ask(port, "?").startswith("RECORDER"):
+                time.sleep(settle)  # the board may miss what arrives right as the port opens
+                for _ in range(3):
+                    hello = _ask(port, "?")
+                    if hello.startswith("RECORDER"):
+                        break
+                else:
+                    log(f"{name}: not a recorder (answered {hello!r})")
                     continue
                 reply = _ask(port, f"T{local_epoch(now)}")
-        except OSError:  # busy (the Arduino serial monitor has it), or unplugged meanwhile
+        except OSError as e:  # busy (the Arduino serial monitor has it), or unplugged meanwhile
+            log(f"{name}: can't open ({e})")
             continue
         if reply.startswith("OK "):
             done.append((name, reply[3:]))
+        else:
+            log(f"{name}: didn't take the time (answered {reply!r})")
     return done

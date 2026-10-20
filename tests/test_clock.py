@@ -38,7 +38,7 @@ def test_local_epoch_counts_wall_clock_as_utc():
 
 def test_set_clock_sends_local_time():
     ports = {"COM5": FakePort(recorder)}
-    done = set_clock(["COM5"], datetime(2026, 10, 20, 9, 30), open_port=ports.__getitem__)
+    done = set_clock(["COM5"], datetime(2026, 10, 20, 9, 30), open_port=ports.__getitem__, settle=0)
     assert done == [("COM5", "20261020T093000")]
     assert ports["COM5"].sent == ["?\n", "T1792488600\n"]
 
@@ -48,6 +48,16 @@ def test_set_clock_leaves_other_boards_and_busy_ports_alone():
         raise OSError("access denied")
 
     other = FakePort(lambda line: "hello")
-    assert set_clock(["COM3"], open_port=lambda name: other) == []
-    assert other.sent == ["?\n"]  # asked, never told the time
-    assert set_clock(["COM4"], open_port=busy) == []
+    said = []
+    assert set_clock(["COM3"], open_port=lambda name: other, settle=0, log=said.append) == []
+    assert other.sent == ["?\n"] * 3  # asked, never told the time
+    assert set_clock(["COM4"], open_port=busy, settle=0, log=said.append) == []
+    assert said == ["COM3: not a recorder (answered 'hello')", "COM4: can't open (access denied)"]
+
+
+def test_set_clock_asks_again_when_the_first_line_is_lost():
+    answers = iter(["", "RECORDER 1 unset REC - dropped=0", "OK 20261020T093000"])
+    port = FakePort(lambda line: next(answers))
+    assert set_clock(["COM3"], open_port=lambda name: port, settle=0) == [
+        ("COM3", "20261020T093000")
+    ]
