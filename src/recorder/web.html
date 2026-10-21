@@ -345,7 +345,7 @@ const STRINGS = {
     devFiles: "On the card", devFilesN: "{n} recordings, {mb} MB", devFilesN1: "1 recording, {mb} MB",
     devStates: { LISTEN: "Listening", REC: "Recording", PAUSED: "Paused", FAILED: "Card problem" },
     devUnset: "not set", devSync: "Sync and transcribe", devDelete: "Delete from the card once synced",
-    devSyncStarted: "Syncing: progress shows on the left", devDownloading: "Downloading {i}/{n}",
+    devSyncStarted: "Syncing: progress shows on the left", devDownloading: "Downloading {i}/{n}", devTranscribingN: "Transcribing {i}/{n}",
     devTranscribing: "Transcribing", devSynced: "{n} new", devLiveTitle: "Live transcription",
     devLiveHint: "Transcribes what the recorder hears as it happens. It keeps recording to its card as usual.",
     devLiveStart: "Start", devSave: "Save as a recording", devNoBleak: "Bluetooth needs bleak: pip install \"recorder[device]\"",
@@ -424,7 +424,7 @@ const STRINGS = {
     devFiles: "卡上录音", devFilesN: "{n} 段，{mb} MB",
     devStates: { LISTEN: "在听", REC: "在录", PAUSED: "已暂停", FAILED: "SD 卡有问题" },
     devUnset: "未对时", devSync: "同步并转写", devDelete: "同步后从卡上删除",
-    devSyncStarted: "开始同步，进度在左边", devDownloading: "下载中 {i}/{n}",
+    devSyncStarted: "开始同步，进度在左边", devDownloading: "下载中 {i}/{n}", devTranscribingN: "转写中 {i}/{n}",
     devTranscribing: "转写中", devSynced: "新增 {n} 段", devLiveTitle: "实时转写",
     devLiveHint: "录音设备听到什么就实时转成文字。设备照常往卡上录。",
     devLiveStart: "开始", devSave: "保存为一条录音", devNoBleak: "蓝牙需要 bleak：pip install \"recorder[device]\"",
@@ -851,8 +851,12 @@ async function pollJobs() {
 }
 function jobLabel(j, label) {
   if (j.kind === "device") {
-    if (j.status === "running") return j.stage === "transcribing" ? t("devTranscribing")
-      : j.progress ? t("devDownloading", { i: j.progress[0], n: j.progress[1] }) : label.running;
+    if (j.status === "running" && j.progress) {
+      const [i, n] = j.progress, mb = b => (b / 1e6).toFixed(1);
+      const bytes = j.bytes ? ` · ${mb(j.bytes[0])}/${mb(j.bytes[1])} MB` : "";
+      const rate = j.stage === "downloading" && j.rate ? ` · ${Math.round(j.rate / 1000)} KB/s` : "";
+      return t(j.stage === "transcribing" ? "devTranscribingN" : "devDownloading", { i: Math.min(i + 1, n), n }) + bytes + rate;
+    }
     return j.status === "done" ? t("devSynced", { n: j.new }) : label[j.status];
   }
   if (j.kind !== "suggest") return label[j.status];
@@ -1237,7 +1241,7 @@ function showDevice() {
 function renderDevice(d) {
   if (!$("#devCards")) return stopDeviceView();
   $("#devToggle").textContent = d.connected ? t("devDisconnect") : t("devConnect");
-  $("#devStatus").textContent = d.connected ? t("devOn") : d.error || t("devHint");
+  $("#devStatus").textContent = d.connected ? t("devOn") + (d.mtu ? ` · MTU ${d.mtu}` : "") : d.error || t("devHint");
   $("#devSyncRow").hidden = $("#devLiveBox").hidden = !d.connected;
   if (d.live && !dev.liveTimer) {  // still on from before: follow it again
     dev.segs = []; $("#devLive").textContent = t("stop"); $("#devLive").className = "big stop";

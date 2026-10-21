@@ -518,6 +518,7 @@ class App:
             "files": g["files"] if connected else None,
             "error": g["error"],
             "live": live is not None,
+            "mtu": getattr(self._link.client, "mtu_size", None) if connected else None,
         }
 
     def gadget_connect(self, q, body):
@@ -543,42 +544,60 @@ class App:
         delete = bool(body.get("delete"))
         threshold = float(body.get("threshold", 0.3))
         self.link()
+        for job in self.jobs.values():  # one sync at a time: a second click joins the first
+            if job["kind"] == "device" and job["status"] in ("queued", "running"):
+                return job
         return self._enqueue("device", "Recorder", lambda job: self._sync(job, delete, threshold))
 
     def _sync(self, job: dict, delete: bool, threshold: float) -> None:
+        """Download each recording, then import it before the next one, so results come in
+        as they go; the job shows the file count, bytes and download speed."""
+        import time
+
         from .ingest import Syncer
         from .sync import AudioFile, started_at_of
 
         inbox = Path(self.db).resolve().parent / "inbox"
         files = self._gadget_call(lambda rec: rec.list_files())
-        job["progress"] = [0, len(files)]
-        local = []
-        for i, (path, size) in enumerate(files):
-            dest = inbox / path
-            if not (dest.is_file() and dest.stat().st_size == size):
-                self._gadget_call(lambda rec, p=path, n=size, d=dest: rec.fetch(p, n, d))
-            local.append((path, dest))
-            job["progress"] = [i + 1, len(files)]
-        job["stage"] = "transcribing"
+        total = sum(n for _, n in files)
+        job.update(progress=[0, len(files)], bytes=[0, total], rate=None)
+        done_bytes = fetched = 0
+        started = time.monotonic()
         new = []
-        with self.model_lock, self.store() as store:
-            labeler = self._labeler(store, threshold)
+        with self.store() as store:
+            with self.model_lock:
+                labeler = self._labeler(store, threshold)
             syncer = Syncer(store, Pipeline(self.transcriber(), store, labeler), self.library)
-            done = []
-            for path, dest in local:
-                r = syncer.sync_file(AudioFile(dest, started_at_of(dest)))
+            for i, (path, size) in enumerate(files):
+                job["stage"] = "downloading"
+                dest = inbox / path
+                if not (dest.is_file() and dest.stat().st_size == size):
+                    base, before = done_bytes, fetched
+
+                    def progress(got, base=base, before=before):
+                        job["bytes"] = [base + got, total]
+                        job["rate"] = (before + got) / max(time.monotonic() - started, 0.1)
+
+                    self._gadget_call(
+                        lambda rec, p=path, n=size, d=dest: rec.fetch(p, n, d, progress)
+                    )
+                    fetched += size
+                done_bytes += size
+                job["bytes"] = [done_bytes, total]
+                job["stage"] = "transcribing"
+                with self.model_lock:
+                    r = syncer.sync_file(AudioFile(dest, started_at_of(dest)))
                 if r.status == "new":
                     new.append(r.recording_id)
-                if r.status in ("new", "known"):
-                    done.append((path, dest))
+                    job.update(new=len(new), recording=r.recording_id)
                 if r.status == "failed":
                     job["error"] = r.error
-        if delete:
-            for path, dest in done:
-                self._gadget_call(lambda rec, p=path: rec.delete(p))
-                dest.unlink(missing_ok=True)
+                if delete and r.status in ("new", "known"):
+                    self._gadget_call(lambda rec, p=path: rec.delete(p))
+                    dest.unlink(missing_ok=True)
+                job["progress"] = [i + 1, len(files)]
+        job.update(new=len(new), stage=None)
         self._refresh_files()
-        job.update(new=len(new), recording=new[-1] if new else None)
         for rid in new:
             self.suggest(rid)
 
