@@ -13,6 +13,7 @@ button and a LiPo battery. It listens all day and records to the card whenever t
 | SD module CLK / MISO / MOSI / CS | D8 / D9 / D10 / D2 |
 | Button (other side to GND) | D1 |
 | Battery + (through the power switch) / − | BAT+ / BAT− pads on the back |
+| Optional 0.91" OLED (128×32, SSD1306, I2C) VCC / GND / SDA / SCL | 3V3 / GND / D4 / D5 |
 
 Use a 3.3 V SD module without a regulator, and a FAT32 card (32 GB or smaller formats as FAT32
 on Windows). The battery only charges while the switch is on.
@@ -46,6 +47,13 @@ deleted when it ends, and a Bluetooth sync drops files Whisper finds no speech i
 | Solid for a moment after a press | Listening started |
 | Two flashes after a press | Paused |
 | Fast blinking | No card, or the card failed or is full. Press the button to retry |
+
+With the OLED connected (and the **Adafruit SSD1306** library installed from the Library
+Manager, with the libraries it asks for), the screen lights for 5 seconds at power-on and when
+the button is pressed: the state (`REC 1:23`, `LISTEN`, `PAUSED`, `NO CARD`), battery,
+Bluetooth and clock. With a screen the first press only lights it; pressing again while it's lit
+pauses or resumes. Dark, it draws almost nothing. Without the library or the screen the
+firmware works as before.
 
 Files are 16 kHz mono IMA ADPCM WAV, 4:1 compressed (about 29 MB per hour of sound). The header
 is rewritten every 30 seconds, so a power cut loses at most the last 30 seconds.

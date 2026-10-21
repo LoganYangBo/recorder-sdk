@@ -6,7 +6,11 @@
 // (keeping the second before it), and ends after 10 s of quiet. Files are 16 kHz mono IMA ADPCM
 // WAV (4:1, about 29 MB per hour of sound), at most 10 minutes each. The button pauses and
 // resumes listening. Wiring (see firmware/README.md): SD on SPI (D8 SCK, D9 MISO, D10 MOSI,
-// CS on D2), button between D1 and GND.
+// CS on D2), button between D1 and GND, optional 128x32 SSD1306 OLED on I2C (D4 SDA, D5 SCL).
+//
+// The OLED (when the Adafruit SSD1306 library is installed and a screen is connected) stays
+// dark and lights for 5 s at power-on and when the button is pressed; a press while it is lit
+// pauses or resumes. Without a screen, every press pauses or resumes.
 //
 // Bluetooth LE ("Recorder"): the computer sets the clock, lists, downloads and deletes files,
 // and can stream live audio (`recorder sync --ble`, `recorder live`, src/recorder/ble.py).
@@ -23,6 +27,11 @@
 #include <bluefruit.h>
 #include <time.h>
 #include "adpcm.h"
+#if __has_include(<Adafruit_SSD1306.h>)
+#include <Wire.h>
+#include <Adafruit_SSD1306.h>
+#define HAVE_SCREEN_LIB 1
+#endif
 
 const uint32_t SAMPLE_RATE = 16000;
 const uint32_t BYTES_PER_SEC = SAMPLE_RATE * 2;    // in the ring buffer (16-bit)
@@ -86,7 +95,7 @@ Adpcm fileEnc;
 uint8_t out[16 * FILE_BLOCK];  // encoded blocks waiting for one SD write
 uint32_t outLen = 0, dataBytes = 0, samples = 0, sinceFlush = 0, notimeIndex = 0;
 char path[32];
-uint32_t feedbackUntil = 0;
+uint32_t feedbackUntil = 0, recordingSince = 0;
 bool feedbackOn = false;
 time_t clockBase = 0;  // the clock reads clockBase when millis() == clockMs
 uint32_t clockMs = 0;
@@ -327,6 +336,7 @@ void startSegment() {
   if (!startFile()) return fail();
   soundFrames = __builtin_popcount(recent);
   lastSoundAt = scan;
+  recordingSince = millis();
   state = RECORDING;
 }
 
@@ -553,6 +563,81 @@ void setupBle() {
   Bluefruit.Advertising.start(0);
 }
 
+// ---- screen ----
+
+const uint32_t SCREEN_MS = 5000;
+#ifdef HAVE_SCREEN_LIB
+Adafruit_SSD1306 screen(128, 32, &Wire, -1);
+#endif
+bool haveScreen = false;
+uint32_t screenUntil = 0, screenDrawnAt = 0;
+
+void setupScreen() {
+#ifdef HAVE_SCREEN_LIB
+  Wire.begin();
+  Wire.beginTransmission(0x3C);
+  if (Wire.endTransmission() != 0) return;  // nothing connected
+  haveScreen = screen.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  screenUntil = millis() + SCREEN_MS;
+  screenDrawnAt = millis() - 1000;
+#endif
+}
+
+bool screenOn() { return haveScreen && (int32_t)(screenUntil - millis()) > 0; }
+
+void showScreen() {
+  screenUntil = millis() + SCREEN_MS;
+  screenDrawnAt = millis() - 1000;  // draw now
+}
+
+//   REC 1:23            (or LISTEN / PAUSED / NO CARD, large)
+//   BAT 78%   BT ON
+//   10-20 21:11         (or CLOCK NOT SET)
+void updateScreen() {
+#ifdef HAVE_SCREEN_LIB
+  static bool lit = false;
+  if (!haveScreen) return;
+  if (!screenOn()) {
+    if (lit) screen.ssd1306_command(SSD1306_DISPLAYOFF);  // about 10 uA when off
+    lit = false;
+    return;
+  }
+  if (lit && millis() - screenDrawnAt < 1000) return;
+  screenDrawnAt = millis();
+  char line[24];
+  screen.clearDisplay();
+  screen.setTextColor(SSD1306_WHITE);
+  screen.setTextSize(2);
+  screen.setCursor(0, 0);
+  if (state == RECORDING) {
+    uint32_t sec = (millis() - recordingSince) / 1000;
+    snprintf(line, sizeof line, "REC %lu:%02lu", (unsigned long)(sec / 60), (unsigned long)(sec % 60));
+    screen.print(line);
+  } else {
+    screen.print(state == LISTENING ? "LISTEN" : state == PAUSED ? "PAUSED" : "NO CARD");
+  }
+  screen.setTextSize(1);
+  screen.setCursor(0, 16);
+  if (batteryPct >= 0) {
+    snprintf(line, sizeof line, "BAT %d%%", batteryPct);
+    screen.print(line);
+  }
+  screen.setCursor(72, 16);
+  screen.print(Bluefruit.connected() ? "BT ON" : "BT OFF");
+  screen.setCursor(0, 24);
+  if (clockValid()) {
+    time_t t = clockNow();
+    strftime(line, sizeof line, "%m-%d %H:%M", gmtime(&t));  // the clock holds local time
+    screen.print(line);
+  } else {
+    screen.print("CLOCK NOT SET");
+  }
+  screen.display();
+  if (!lit) screen.ssd1306_command(SSD1306_DISPLAYON);
+  lit = true;
+#endif
+}
+
 // ---- button, LED, commands ----
 
 void handleButton() {
@@ -565,7 +650,14 @@ void handleButton() {
   }
   if (millis() - changedAt > 30 && now != stable) {
     stable = now;
-    if (stable == LOW) onPress();
+    if (stable == LOW) {
+      if (haveScreen && !screenOn()) {
+        showScreen();  // the first press only shows the screen
+      } else {
+        onPress();
+        if (haveScreen) showScreen();
+      }
+    }
   }
 }
 
@@ -727,6 +819,7 @@ void setup() {
   analogReadResolution(12);
   setupBle();
   readBattery();
+  setupScreen();
   PDM.onReceive(onPDMdata);
   if (!SD.begin(SD_CS)) {
     state = FAILED;
@@ -741,6 +834,7 @@ void loop() {
   handleBle();
   handleButton();
   updateLed();
+  updateScreen();
   keepClock();
   if (millis() - batteryAt > 60000) {
     batteryAt = millis();
