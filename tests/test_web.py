@@ -37,6 +37,8 @@ class FakeTranscriber:
             n = len(audio) // (2 * SR)
             segs = [Segment(2.0 * k, 2.0 * k + 2, f"live {k}") for k in range(n)]
             return Transcript("en", len(audio) / SR, segs)
+        if "silence" in str(audio):  # a file with no speech in it
+            return Transcript("en", 6, [], params=self.params)
         segs = [Segment(0, 2, "imported a"), Segment(2, 4, "imported b"), Segment(4, 6, "c")]
         return Transcript("en", 6, segs, params=self.params)
 
@@ -212,6 +214,28 @@ def test_import_transcribes_in_background(server, tmp_path):
     dup = wait_jobs(server)[0]
     assert dup["status"] == "duplicate" and dup["recording"] == 2
     assert sorted(p.name for p in (tmp_path / "lib").iterdir()) == ["new talk.m4a"]
+
+
+def test_import_without_speech_is_dropped(server, tmp_path):
+    req = urllib.request.Request(
+        server + "/api/import?name=silence.m4a", data=b"quiet", method="POST"
+    )
+    urllib.request.urlopen(req).close()
+    (job,) = wait_jobs(server)
+    assert job["status"] == "noise" and job.get("recording") is None
+    assert not (tmp_path / "lib" / "silence.m4a").exists()
+    assert [r["file"] for r in jcall(server, "/api/recordings")] == ["talk.m4a"]
+
+
+def test_live_session_without_speech_is_not_saved(server):
+    sid = jcall(server, "/api/live/start", "POST", {})["id"]
+    req = urllib.request.Request(  # 1.5 s: the fake hears speech only in 2 s pieces
+        f"{server}/api/live/{sid}/audio", data=tone(200, 1.5).astype("<f4").tobytes(), method="POST"
+    )
+    urllib.request.urlopen(req).close()
+    stop = jcall(server, f"/api/live/{sid}/stop", "POST", {})
+    assert stop["recording"] is None and stop["reason"] == "empty"
+    assert len(jcall(server, "/api/recordings")) == 1
 
 
 def test_import_rejects_non_audio(server):

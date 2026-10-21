@@ -188,9 +188,9 @@ one job at a time in a background queue, which the page lists under Background j
 - **Browse and play.** Recordings are grouped by day with their start times. Click a time or a
   word to play from there. Switch between segments and merged speaker turns, and search.
 - **Import.** Click Import or drag files onto the page. Files are copied into the library and
-  transcribed in the background.
+  transcribed in the background. A file in which Whisper hears no speech is not kept.
 - **Record live.** Transcribes the microphone as you talk and saves a normal recording when you
-  stop.
+  stop (unless no speech was heard).
 - **Manage.** Rename a recording, set its start time, or delete it (the audio file goes too if it
   is in the library).
 - **Speakers.** Lists and deletes voiceprints and tunes the threshold. Tick segments in a

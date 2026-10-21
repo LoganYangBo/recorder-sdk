@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import ops
+from .ingest import has_speech
 from .live import LiveSession
 from .pipeline import Pipeline
 from .store import Store
@@ -408,8 +409,16 @@ class App:
             if r.skipped:  # same audio was imported before: drop the copy
                 path.unlink(missing_ok=True)
                 job["name"] = store.recording(r.recording_id).name
-        job.update(result="duplicate" if r.skipped else "done", recording=r.recording_id)
-        if not r.skipped:
+                result = "duplicate"
+            elif not has_speech(store.segments(r.recording_id)):  # no speech: drop it
+                store.delete(r.recording_id)
+                path.unlink(missing_ok=True)
+                job.update(result="noise")
+                return
+            else:
+                result = "done"
+        job.update(result=result, recording=r.recording_id)
+        if result == "done":
             self.suggest(r.recording_id)
 
     def suggest(self, rid: int) -> dict | None:
@@ -480,8 +489,9 @@ class App:
             session.finish()
         del self.live[sid]
         committed = [_seg_json(before + i + 1, s) for i, s in enumerate(session.committed[before:])]
-        if session.duration < 1:
-            return {"recording": None, "committed": committed}
+        if session.duration < 1 or not has_speech(session.committed):  # nothing worth keeping
+            reason = "short" if session.duration < 1 else "empty"
+            return {"recording": None, "committed": committed, "reason": reason}
         with self.store() as store:
             params = getattr(self.transcriber(), "params", {})
             rid = session.save(store, self.library, params)
@@ -689,13 +699,8 @@ class App:
         with self.model_lock:
             session.finish()
         committed = [_seg_json(before + i + 1, s) for i, s in enumerate(session.committed[before:])]
-        if not body.get("save") or session.duration < 1:
-            return {"recording": None, "committed": committed}
-        with self.store() as store:
-            params = {**getattr(self.transcriber(), "params", {}), "source": "ble"}
-            rid = session.save(store, self.library, params)
-        self.suggest(rid)
-        return {"recording": rid, "committed": committed}
+        # not saved: the recorder puts the same audio on its card, which syncs in full
+        return {"recording": None, "committed": committed}
 
     # ---- unsure words: candidates, corrections, pronunciation ----
 

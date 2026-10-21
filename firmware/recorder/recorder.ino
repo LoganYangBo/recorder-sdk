@@ -480,7 +480,15 @@ bool stepLive() {
   if (!liveOn || (state != LISTENING && state != RECORDING)) return false;
   int bytes = min(mtu - 3, 240);
   uint32_t need = (1 + (bytes - 4) * 2) * 2;
-  if ((int32_t)(livePos - tail) < 0) livePos = tail;  // fell behind: skip ahead
+  // Audio behind `tail` stays in the ring until the microphone comes round to it again, so the
+  // stream can lag the SD writes; only when it's about to be overwritten does it skip ahead
+  // (counting the blocks skipped, so the computer sees them as lost).
+  const uint32_t keep = RING_SIZE - 8192;
+  if (head - livePos > keep) {
+    uint32_t skip = (head - livePos - keep + need - 1) / need;
+    livePos += skip * need;
+    liveSeq += skip;
+  }
   if (head - livePos < need) return false;
   uint8_t block[240];
   peek(livePos, pcm, need);
@@ -749,7 +757,7 @@ void loop() {
     if (!writeBlock(BLOCK_PCM)) fail();
     busy = true;
   }
-  for (int i = 0; i < 4 && stepLive(); i++) busy = true;
+  for (int i = 0; i < 8 && stepLive(); i++) busy = true;
   for (int i = 0; i < 16 && job != NO_JOB && stepJob(); i++) busy = true;
   if (!busy) delay(10);  // lets the CPU sleep between blocks
 }

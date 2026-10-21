@@ -329,7 +329,7 @@ const STRINGS = {
     deletedKept: "Deleted “{name}”; the audio file is kept at {path}", fileErr: "{name}: {msg}",
     dupImport: "{name} was already imported",
     analysing: "Analysing words", analysingN: "Analysing words {i}/{n}", analysed: "Words analysed",
-    jobQueued: "Queued", jobRunning: "Transcribing", jobDone: "Done", jobDuplicate: "Already imported",
+    jobQueued: "Queued", jobRunning: "Transcribing", jobDone: "Done", jobDuplicate: "Already imported", jobNoise: "No speech",
     jobError: "Failed", uploading: "Uploading",
     findingWords: "Looking for likely words… (the model loads the first time)",
     heard: "Heard", sure: "{p}% sure", playClip: "▶ Your audio", sayHeard: "▶ How “{w}” sounds",
@@ -359,7 +359,7 @@ const STRINGS = {
     liveHint: "Records from the microphone, transcribing and labelling speakers as you talk. It is saved as a recording when you stop.",
     micFail: "Can't use the microphone: {msg}", stop: "Stop", recordingNow: "Recording",
     transcribeErr: "Transcription failed: {msg}", finishing: "Transcribing the last part and saving…",
-    liveSaved: "Saved as a recording; use “Rename” to give it a name", tooShort: "Too short, not saved",
+    liveSaved: "Saved as a recording; use “Rename” to give it a name", tooShort: "Too short, not saved", noSpeech: "No speech heard, not saved", noSpeechImport: "{name}: no speech heard, not kept",
     noServer: "Can't reach the local server: {msg}", otherLang: "中文",
     device: "Recorder", devConnect: "Connect", devDisconnect: "Disconnect", devConnecting: "Looking for the recorder over Bluetooth…",
     devHint: "Switch the recorder on and keep it near this computer. No pairing needed.",
@@ -369,8 +369,8 @@ const STRINGS = {
     devUnset: "not set", devSync: "Sync and transcribe", devDelete: "Delete from the card once synced",
     devSyncStarted: "Syncing: progress shows on the left", devDownloading: "Downloading {i}/{n}", devTranscribingN: "Transcribing {i}/{n}",
     devTranscribing: "Transcribing", devSynced: "{n} new", devNoise: ", {n} noise-only dropped", devLiveTitle: "Live transcription",
-    devLiveHint: "Transcribes what the recorder hears as it happens. It keeps recording to its card as usual.",
-    devLiveStart: "Start", devSave: "Save as a recording", devNoBleak: "Bluetooth needs bleak: pip install \"recorder[device]\"",
+    devLiveHint: "Transcribes what the recorder hears as it happens, just to watch: nothing is saved here. The recorder keeps recording to its card, and that copy comes in full when you sync.",
+    devLiveStart: "Start", devNoBleak: "Bluetooth needs bleak: pip install \"recorder[device]\"",
     devLevel: "level {v} · noise floor {f}",
   },
   zh: {
@@ -413,7 +413,7 @@ const STRINGS = {
     deletedKept: "已删除“{name}”，原音频文件保留在 {path}", fileErr: "{name}：{msg}",
     dupImport: "{name} 之前已经导入过",
     analysing: "分析难词", analysingN: "分析难词 {i}/{n}", analysed: "难词已分析",
-    jobQueued: "排队中", jobRunning: "转写中", jobDone: "完成", jobDuplicate: "已存在",
+    jobQueued: "排队中", jobRunning: "转写中", jobDone: "完成", jobDuplicate: "已存在", jobNoise: "没有说话",
     jobError: "出错", uploading: "上传中",
     findingWords: "正在找可能的词…（第一次会加载模型）",
     heard: "听到", sure: "把握 {p}%", playClip: "▶ 录音原声", sayHeard: "▶ {w} 的标准发音",
@@ -441,7 +441,7 @@ const STRINGS = {
     liveHint: "用麦克风录音，边录边转写并识别说话人。停止后自动保存为一条录音。",
     micFail: "拿不到麦克风：{msg}", stop: "停止", recordingNow: "正在录音",
     transcribeErr: "转写出错：{msg}", finishing: "正在转写最后一段并保存…",
-    liveSaved: "已保存为一条录音，可以点“改名”起个名字", tooShort: "录音太短，没有保存",
+    liveSaved: "已保存为一条录音，可以点“改名”起个名字", tooShort: "录音太短，没有保存", noSpeech: "没听到说话，没有保存", noSpeechImport: "{name}：没听到说话，没有保留",
     noServer: "连不上本地服务：{msg}", otherLang: "English",
     device: "设备", devConnect: "连接", devDisconnect: "断开", devConnecting: "正在通过蓝牙找录音设备…",
     devHint: "打开录音设备的开关，放在电脑旁边。不用配对。",
@@ -451,8 +451,8 @@ const STRINGS = {
     devUnset: "未对时", devSync: "同步并转写", devDelete: "同步后从卡上删除",
     devSyncStarted: "开始同步，进度在左边", devDownloading: "下载中 {i}/{n}", devTranscribingN: "转写中 {i}/{n}",
     devTranscribing: "转写中", devSynced: "新增 {n} 段", devNoise: "，丢弃 {n} 段杂音", devLiveTitle: "实时转写",
-    devLiveHint: "录音设备听到什么就实时转成文字。设备照常往卡上录。",
-    devLiveStart: "开始", devSave: "保存为一条录音", devNoBleak: "蓝牙需要 bleak：pip install \"recorder[device]\"",
+    devLiveHint: "录音设备听到什么就实时转成文字，只用来看，这里不另存。设备照常往卡上录，同步后就有完整的录音。",
+    devLiveStart: "开始", devNoBleak: "蓝牙需要 bleak：pip install \"recorder[device]\"",
     devLevel: "音量 {v} · 底噪 {f}",
   },
 };
@@ -908,11 +908,12 @@ async function pollJobs() {
   const jobs = await api("/api/jobs").catch(() => []);
   let changed = false;
   for (const j of jobs) {
-    const finished = j.status === "done" || j.status === "duplicate";
+    const finished = ["done", "duplicate", "noise"].includes(j.status);
     if (firstPoll && (finished || j.status === "error")) { hidden.add(j.id); seenDone.add(j.id); continue; }
     if (finished && !seenDone.has(j.id)) {
       seenDone.add(j.id); changed = true;
       if (j.status === "duplicate") toast(t("dupImport", { name: j.name }));
+      if (j.status === "noise") toast(t("noSpeechImport", { name: j.name }));
       setTimeout(() => { hidden.add(j.id); renderJobs(); }, 4000);
     }
   }
@@ -938,7 +939,7 @@ function jobLabel(j, label) {
 }
 function renderJobs(jobs = renderJobs.last || []) {
   renderJobs.last = jobs;
-  const label = { queued: t("jobQueued"), running: t("jobRunning"), done: t("jobDone"), duplicate: t("jobDuplicate"), error: t("jobError") };
+  const label = { queued: t("jobQueued"), running: t("jobRunning"), done: t("jobDone"), duplicate: t("jobDuplicate"), noise: t("jobNoise"), error: t("jobError") };
   const rows = [
     ...uploading.map(u => `<div class="job"><span class="spin"></span><span class="jn">${esc(u.name)}</span><span class="st">${t("uploading")}</span></div>`),
     ...jobs.filter(j => !hidden.has(j.id)).map(j => `<div class="job" ${j.recording ? `data-open="${j.recording}" style="cursor:pointer"` : ""}>
@@ -1265,7 +1266,7 @@ async function stopLive() {
     const r = await api(`/api/live/${live.id}/stop`, { method: "POST", body: {} });
     live.id = null;
     if (r.recording) { await loadRecs(); openRec(r.recording); pollJobs(); toast(t("liveSaved")); }
-    else { live.segs.push(...r.committed); renderLive(); toast(t("tooShort")); }
+    else { live.segs.push(...r.committed); renderLive(); toast(t(r.reason === "empty" ? "noSpeech" : "tooShort")); }
   });
 }
 
@@ -1295,7 +1296,6 @@ function showDevice() {
         <button class="big start" id="devLive">${t("devLiveStart")}</button>
         <span class="clock" id="devClock">0:00</span>
         <div class="meter"><div id="devLevel"></div></div>
-        <label><input type="checkbox" id="devSave"> ${t("devSave")}</label>
         <span class="status">${t("devLiveHint")}</span>
       </div>
       <div class="lines" id="devLines"></div>
@@ -1389,9 +1389,8 @@ async function stopDeviceLive() {
   const btn = $("#devLive");
   if (btn) { btn.textContent = t("devLiveStart"); btn.className = "big start"; }
   await busy(t("finishing"), async () => {
-    const r = await api("/api/device/live/stop", { method: "POST", body: { save: $("#devSave")?.checked } });
+    const r = await api("/api/device/live/stop", { method: "POST", body: {} });
     dev.segs.push(...r.committed); dev.partial = ""; renderDeviceLive();
-    if (r.recording) { await loadRecs(); pollJobs(); toast(t("liveSaved")); }
   });
 }
 
