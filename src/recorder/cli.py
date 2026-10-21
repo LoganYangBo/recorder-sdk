@@ -178,9 +178,9 @@ def _ble(args, work):
     import asyncio
 
     try:
-        from bleak import BleakClient
+        from .ble import BleRecorder, RecorderError, find_recorder, import_bleak
 
-        from .ble import BleRecorder, RecorderError, find_recorder
+        BleakClient = import_bleak().BleakClient
     except ImportError:
         raise SystemExit('needs bleak: pip install "recorder[device]"')
 

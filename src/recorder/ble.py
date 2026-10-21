@@ -41,9 +41,26 @@ class RecorderError(RuntimeError):
     pass
 
 
+def import_bleak():
+    """Import bleak, after CTranslate2 when it's installed. On Windows, bleak's WinRT bindings
+    ship an old C++ runtime (winrt/msvcp140.dll, 14.29); if that loads first, CTranslate2
+    (built against 14.40+) crashes with an access violation when it loads a Whisper model.
+    Loading CTranslate2 first puts the system's newer runtime in place for both."""
+    try:
+        from .transcribe import _add_nvidia_dll_dirs
+
+        _add_nvidia_dll_dirs()
+        import ctranslate2  # noqa: F401
+    except Exception:  # not installed (or no GPU libraries): nothing to protect
+        pass
+    import bleak
+
+    return bleak
+
+
 async def find_recorder(timeout: float = 10.0):
     """The first recorder advertising nearby, or None."""
-    from bleak import BleakScanner
+    BleakScanner = import_bleak().BleakScanner
 
     return await BleakScanner.find_device_by_filter(
         lambda dev, adv: SERVICE in [u.lower() for u in adv.service_uuids], timeout=timeout
@@ -232,9 +249,7 @@ class BleLink:
             if dev is None:
                 raise RecorderError("no recorder in range: switch it on and bring it close")
             if self._make_client is None:
-                from bleak import BleakClient
-
-                client = BleakClient(dev)
+                client = import_bleak().BleakClient(dev)
             else:
                 client = self._make_client(dev)
             await client.connect()

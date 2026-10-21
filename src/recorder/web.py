@@ -480,9 +480,9 @@ class App:
     def link(self):
         if self._link is None:
             try:
-                from .ble import BleLink
+                from .ble import BleLink, import_bleak
 
-                import bleak  # noqa: F401
+                import_bleak()
             except ImportError as e:
                 raise ApiError(400, 'needs bleak: pip install "recorder[device]"') from e
             self._link = BleLink()
