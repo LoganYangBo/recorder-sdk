@@ -564,10 +564,8 @@ class App:
         done_bytes = fetched = 0
         started = time.monotonic()
         new = []
+        syncer = None  # the models load when the first file is in, not before
         with self.store() as store:
-            with self.model_lock:
-                labeler = self._labeler(store, threshold)
-            syncer = Syncer(store, Pipeline(self.transcriber(), store, labeler), self.library)
             for i, (path, size) in enumerate(files):
                 job["stage"] = "downloading"
                 dest = inbox / path
@@ -586,6 +584,10 @@ class App:
                 job["bytes"] = [done_bytes, total]
                 job["stage"] = "transcribing"
                 with self.model_lock:
+                    if syncer is None:
+                        labeler = self._labeler(store, threshold)
+                        pipeline = Pipeline(self.transcriber(), store, labeler)
+                        syncer = Syncer(store, pipeline, self.library)
                     r = syncer.sync_file(AudioFile(dest, started_at_of(dest)))
                 if r.status == "new":
                     new.append(r.recording_id)
@@ -1024,8 +1026,10 @@ def serve(
     library: str | Path | None = None,
     whisper: dict | None = None,
 ) -> None:
+    import faulthandler
     from importlib.util import find_spec
 
+    faulthandler.enable()  # a crash in a native library (GPU, Bluetooth) prints where it was
     aligner = "auto" if find_spec("torchaudio") else None
     app = App(db, device=device, library=library, whisper=whisper, aligner=aligner)
     with Store(db) as store:  # create / migrate the database before the first request
