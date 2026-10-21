@@ -12,11 +12,12 @@ button and a LiPo battery. It listens all day and records to the card whenever t
 | SD module 3V3 / GND | 3V3 / GND |
 | SD module CLK / MISO / MOSI / CS | D8 / D9 / D10 / D2 |
 | Button (other side to GND) | D1 |
-| Battery + (through the power switch) / − | BAT+ / BAT− pads on the back |
+| Battery + / − (a power switch in the + wire is optional) | BAT+ / BAT− pads on the back |
 | Optional 0.91" OLED (128×32, SSD1306, I2C) VCC / GND / SDA / SCL | 3V3 / GND / D4 / D5 |
 
 Use a 3.3 V SD module without a regulator, and a FAT32 card (32 GB or smaller formats as FAT32
-on Windows). The battery only charges while the switch is on.
+on Windows). The recorder doesn't need a power switch: holding the button sleeps it (below).
+With a switch, the battery only charges while it is on.
 
 ## Upload
 
@@ -30,11 +31,15 @@ on Windows). The battery only charges while the switch is on.
 
 ## Use
 
-Switching on starts listening. A recording starts when the sound rises well above the room's
+Power-on starts listening. A recording starts when the sound rises well above the room's
 background noise, keeps the second before it (so the first word isn't cut), and ends after
 10 seconds of quiet: one file per stretch of sound, at most 10 minutes each. Any loud sound
 triggers it, not only speech, but a file with under 0.64 s of sound in it (a knock, a door) is
-deleted when it ends, and a Bluetooth sync drops files Whisper finds no speech in. The button pauses and resumes listening.
+deleted when it ends, and a Bluetooth sync drops files Whisper finds no speech in. The button:
+
+- **Press**: pause or resume listening.
+- **Hold for 2 seconds**: sleep (three slow blinks). Nothing is recorded, Bluetooth is off and
+  the LED stays dark, but the clock keeps running and it charges when plugged in. Press to wake.
 
 | LED | Meaning |
 |-----|---------|
@@ -43,7 +48,8 @@ deleted when it ends, and a Bluetooth sync drops files Whisper finds no speech i
 | Blue instead of red | Connected over Bluetooth |
 | Each blip doubled | The clock isn't set |
 | Long blips | Battery below 15% |
-| Dark | Paused (or switched off) |
+| Dark | Paused, asleep or off |
+| Three slow blinks | Going to sleep |
 | Solid for a moment after a press | Listening started |
 | Two flashes after a press | Paused |
 | Fast blinking | No card, or the card failed or is full. Press the button to retry |
@@ -92,9 +98,8 @@ little under load. `recorder device` shows it, as does `?` in the serial monitor
 ## The clock
 
 The board has no battery-backed clock. Bluetooth sets it on every connection; over USB, plug it
-in with the switch on and run `recorder settime` (or keep `recorder sync --watch` running). The
-clock then holds as long as the switch stays on, so pause with the button rather than switching
-off.
+in and run `recorder settime` (or keep `recorder sync --watch` running). The clock then holds
+while the recorder has power, asleep included; only a flat battery (or a power switch) loses it.
 
 ## Tuning the trigger
 

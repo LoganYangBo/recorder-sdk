@@ -12,6 +12,10 @@
 // dark and lights for 5 s at power-on and when the button is pressed; a press while it is lit
 // pauses or resumes. Without a screen, every press pauses or resumes.
 //
+// Holding the button for 2 s puts the recorder to sleep: no listening, no Bluetooth, LED and
+// screen dark, the clock still running. A press wakes it. It sleeps instead of being switched
+// off, so it needs no power switch and charges whenever it's plugged in.
+//
 // Bluetooth LE ("Recorder"): the computer sets the clock, lists, downloads and deletes files,
 // and can stream live audio (`recorder sync --ble`, `recorder live`, src/recorder/ble.py).
 // It also reports the battery, as the standard battery service that phones and Windows show.
@@ -96,6 +100,8 @@ uint8_t out[16 * FILE_BLOCK];  // encoded blocks waiting for one SD write
 uint32_t outLen = 0, dataBytes = 0, samples = 0, sinceFlush = 0, notimeIndex = 0;
 char path[32];
 uint32_t feedbackUntil = 0, recordingSince = 0;
+bool sleeping = false;
+const uint32_t SLEEP_HOLD_MS = 2000;
 bool feedbackOn = false;
 time_t clockBase = 0;  // the clock reads clockBase when millis() == clockMs
 uint32_t clockMs = 0;
@@ -640,9 +646,36 @@ void updateScreen() {
 
 // ---- button, LED, commands ----
 
+void goToSleep() {
+  if (state == LISTENING || state == RECORDING) pauseListening();  // closes the file
+  for (int i = 0; i < 3; i++) {  // three slow blinks: going to sleep
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(200);
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(200);
+  }
+  job = NO_JOB;
+  liveOn = false;
+  Bluefruit.Advertising.restartOnDisconnect(false);
+  if (connHandle != BLE_CONN_HANDLE_INVALID) Bluefruit.disconnect(connHandle);
+  Bluefruit.Advertising.stop();
+  screenUntil = millis();
+  sleeping = true;
+}
+
+void wakeUp() {
+  sleeping = false;
+  Bluefruit.Advertising.restartOnDisconnect(true);
+  Bluefruit.Advertising.start(0);
+  readBattery();
+  onPress();  // starts listening (or retries the card), with the usual LED feedback
+  if (haveScreen) showScreen();
+}
+
+// Acts on release for a short press, so that holding for 2 s can mean sleep instead.
 void handleButton() {
-  static bool last = HIGH, stable = HIGH;
-  static uint32_t changedAt = 0;
+  static bool last = HIGH, stable = HIGH, held = false;
+  static uint32_t changedAt = 0, pressedAt = 0;
   bool now = digitalRead(BUTTON);
   if (now != last) {
     last = now;
@@ -651,6 +684,13 @@ void handleButton() {
   if (millis() - changedAt > 30 && now != stable) {
     stable = now;
     if (stable == LOW) {
+      pressedAt = millis();
+      held = false;
+      if (sleeping) {
+        wakeUp();
+        held = true;  // this press is used up
+      }
+    } else if (!held) {
       if (haveScreen && !screenOn()) {
         showScreen();  // the first press only shows the screen
       } else {
@@ -658,6 +698,10 @@ void handleButton() {
         if (haveScreen) showScreen();
       }
     }
+  }
+  if (stable == LOW && !held && millis() - pressedAt >= SLEEP_HOLD_MS) {
+    held = true;
+    goToSleep();
   }
 }
 
@@ -830,6 +874,16 @@ void setup() {
 
 void loop() {
   static uint32_t batteryAt = 0;
+  if (sleeping) {
+    handleSerial();
+    handleButton();
+    updateScreen();  // turns it off
+    keepClock();
+    digitalWrite(LED_BUILTIN, HIGH);
+    if (LED_BLUE != LED_BUILTIN) digitalWrite(LED_BLUE, HIGH);
+    delay(50);
+    return;
+  }
   handleSerial();
   handleBle();
   handleButton();
