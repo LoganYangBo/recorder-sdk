@@ -327,7 +327,7 @@ class App:
 
     def delete(self, q, body, rid: int):
         """Delete a recording. Its audio file is deleted too when it lives in the
-        library folder (imports and live recordings); files elsewhere are kept.
+        library folder (imports, live recordings, synced files); files elsewhere are kept.
         """
         with self.store() as store:
             rec = store.recording(rid)
@@ -341,6 +341,19 @@ class App:
             path.unlink()
             deleted_file = True
         return {"ok": True, "deleted_file": deleted_file, "path": rec.path}
+
+    def delete_many(self, q, body):
+        """Delete several recordings (body: {"ids": [...]}), each as `delete` does."""
+        deleted, kept = 0, []
+        for rid in body.get("ids", []):
+            try:
+                r = self.delete(q, {}, int(rid))
+            except ApiError:  # already gone
+                continue
+            deleted += 1
+            if not r["deleted_file"]:
+                kept.append(r["path"])
+        return {"deleted": deleted, "kept_files": kept}
 
     # ---- import: upload into the library, transcribe in the background ----
 
@@ -882,6 +895,7 @@ ROUTES = [  # (method, path, handler, raw body)
     ("POST", r"/api/recordings/(\d+)/rename", "rename"),
     ("POST", r"/api/recordings/(\d+)/started", "set_started"),
     ("DELETE", r"/api/recordings/(\d+)", "delete"),
+    ("POST", r"/api/recordings/delete", "delete_many"),
     ("POST", r"/api/import", "upload", True),
     ("GET", r"/api/jobs", "job_list"),
     ("POST", r"/api/live/start", "live_start"),

@@ -53,6 +53,18 @@ aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; co
 .rec.active { background: var(--accent-soft); border-left-color: var(--accent); }
 .rec .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rec .meta { color: var(--muted); font-size: 12px; }
+.recs-head { display: flex; justify-content: space-between; align-items: center; }
+.recs-head .link { text-transform: none; letter-spacing: 0; font-size: 12px; }
+.selbar-recs { display: flex; gap: 10px; align-items: center; padding: 6px 14px; font-size: 13px;
+  background: var(--accent-soft); position: sticky; top: 0; z-index: 1; }
+.selbar-recs .spacer { flex: 1; }
+.selbar-recs[hidden] { display: none; }
+.danger-link { background: none; border: none; padding: 0; color: var(--danger); cursor: pointer; font: inherit; }
+.picking .rec { display: flex; gap: 8px; align-items: flex-start; }
+.picking .rec input { margin-top: 3px; pointer-events: none; }
+.picking .rec > div { min-width: 0; flex: 1; }
+.picking .rec.picked { background: var(--accent-soft); }
+.picking .day { cursor: pointer; }
 main { overflow-y: auto; }
 .empty { color: var(--muted); padding: 40px; text-align: center; }
 
@@ -225,7 +237,13 @@ button.rec-btn::before { content: "●"; margin-right: 5px; }
 <div class="layout">
   <aside>
     <div id="jobsBox" hidden><h2 data-i18n="jobs"></h2><div class="jobs" id="jobs"></div></div>
-    <h2 data-i18n="recordings"></h2>
+    <h2 class="recs-head"><span data-i18n="recordings"></span><button class="link" id="selectBtn" data-i18n="select"></button></h2>
+    <div class="selbar-recs" id="recsBar" hidden>
+      <span id="recsCount"></span><span class="spacer"></span>
+      <button class="link" id="recsAll" data-i18n="selectAll"></button>
+      <button class="danger-link" id="recsDelete" data-i18n="delete"></button>
+      <button class="link" id="recsCancel" data-i18n="cancel"></button>
+    </div>
     <div id="recs"></div>
   </aside>
   <main id="main"><div class="empty" data-i18n="pickRec"></div></main>
@@ -297,6 +315,10 @@ const STRINGS = {
     noVoiceprints: "No voiceprints yet. Run <code>recorder enroll my_voice.m4a</code> to enroll yourself (me).",
     forgetConfirm: "Delete the voiceprint of “{name}”? Existing labels change after “Recompute all”.",
     deleting: "Deleting…", deletedName: "Deleted {name}",
+    select: "Select", selectAll: "All", selectNone: "None", cancel: "Cancel", delete: "Delete",
+    nPicked: "{n} selected", deleteManyConfirm: "Delete {n} recordings? Their transcripts and speaker labels are deleted for good, and their audio files too if they are in the recordings folder (files elsewhere are kept).",
+    deleteManyConfirm1: "Delete 1 recording? Its transcript and speaker labels are deleted for good, and its audio file too if it is in the recordings folder (files elsewhere are kept).",
+    deletedMany: "Deleted {n} recordings", deletedMany1: "Deleted 1 recording", keptFiles: "; {n} audio files outside the recordings folder were kept", keptFiles1: "; 1 audio file outside the recordings folder was kept",
     rescoring: "Comparing the audio of every recording again…", applyingThr: "Applying the threshold…",
     updated: "Updated {n} recordings", updated1: "Updated 1 recording",
     hits: "{n} results for “{q}”", hits1: "1 result for “{q}”", first100: " (first 100 shown)",
@@ -379,6 +401,9 @@ const STRINGS = {
     noVoiceprints: "还没有声纹。先运行 <code>recorder enroll my_voice.m4a</code> 录入你自己（me）。",
     forgetConfirm: "删除“{name}”的声纹？已打的标签要“重新计算全部”后才会更新。",
     deleting: "删除中…", deletedName: "已删除 {name}",
+    select: "选择", selectAll: "全选", selectNone: "全不选", cancel: "取消", delete: "删除",
+    nPicked: "已选 {n} 段", deleteManyConfirm: "删除这 {n} 段录音？转写和说话人标注会永久删除；音频文件如果在录音文件夹里也会一起删除（其他位置的文件保留）。",
+    deletedMany: "已删除 {n} 段录音", keptFiles: "，{n} 个录音文件夹以外的音频文件已保留",
     rescoring: "正在重新比对全部录音的音频…", applyingThr: "应用阈值…",
     updated: "已更新 {n} 条录音", hits: "“{q}” 共 {n} 条", first100: "（只显示前 100）",
     save: "保存", cancel: "取消", clear: "清除", renamed: "已改名", nameReset: "已恢复为文件名",
@@ -507,14 +532,62 @@ async function loadRecs() {
   const undated = groups.get(t("undated")); groups.delete(t("undated")); if (undated) groups.set(t("undated"), undated);
   $("#recs").innerHTML = state.recs.length ? [...groups].map(([day, recs]) => `
     <div class="day">${esc(day)}</div>` + recs.sort((a, b) => (a.started_at || "").localeCompare(b.started_at || "") || a.id - b.id).map(r => `
-    <div class="rec ${state.rec?.id === r.id ? "active" : ""}" data-id="${r.id}">
+    <div class="rec ${state.rec?.id === r.id && !pick.on ? "active" : ""} ${pick.ids.has(r.id) ? "picked" : ""}" data-id="${r.id}" data-day="${esc(day)}">
+      ${pick.on ? `<input type="checkbox" ${pick.ids.has(r.id) ? "checked" : ""}>` : ""}<div>
       <div class="name" title="${esc(r.path)}">${esc(r.name)}</div>
       <div class="meta">${r.started_at ? `${clock(r, 0, false)}–${clock(r, r.duration, false)}` : "#" + r.id} · ${fmt(r.duration)} · ${t("nSegs", { n: r.segments })} · ${esc(r.model || "?")}</div>
-    </div>`).join("")).join("") : `<div class="empty">${t("noRecs")}</div>`;
+    </div></div>`).join("")).join("") : `<div class="empty">${t("noRecs")}</div>`;
+  $("#recs").classList.toggle("picking", pick.on);
+  renderPickBar();
 }
 $("#recs").addEventListener("click", e => {
-  const el = e.target.closest(".rec"); if (el) { stopLiveView(); openRec(+el.dataset.id); }
+  const day = e.target.closest(".day");
+  if (day && pick.on) {  // a day's heading picks (or unpicks) the whole day
+    const ids = [...$("#recs").querySelectorAll(".rec")].filter(el => el.dataset.day === day.textContent.trim()).map(el => +el.dataset.id);
+    const all = ids.every(id => pick.ids.has(id));
+    ids.forEach(id => all ? pick.ids.delete(id) : pick.ids.add(id));
+    return loadRecs();
+  }
+  const el = e.target.closest(".rec"); if (!el) return;
+  if (pick.on) {
+    const id = +el.dataset.id;
+    pick.ids.has(id) ? pick.ids.delete(id) : pick.ids.add(id);
+    return loadRecs();
+  }
+  stopLiveView(); openRec(+el.dataset.id);
 });
+
+// ---------- picking several recordings, to delete them ----------
+const pick = { on: false, ids: new Set() };
+function renderPickBar() {
+  $("#recsBar").hidden = !pick.on;
+  $("#selectBtn").hidden = pick.on || !state.recs.length;
+  $("#recsCount").textContent = t("nPicked", { n: pick.ids.size });
+  $("#recsDelete").disabled = !pick.ids.size;
+  $("#recsAll").textContent = pick.ids.size === state.recs.length ? t("selectNone") : t("selectAll");
+}
+$("#selectBtn").onclick = () => { pick.on = true; pick.ids.clear(); loadRecs(); };
+$("#recsCancel").onclick = () => { pick.on = false; pick.ids.clear(); loadRecs(); };
+$("#recsAll").onclick = () => {
+  if (pick.ids.size === state.recs.length) pick.ids.clear(); else state.recs.forEach(r => pick.ids.add(r.id));
+  loadRecs();
+};
+$("#recsDelete").onclick = async () => {
+  const n = pick.ids.size;
+  if (!n || !confirm(t("deleteManyConfirm", { n }))) return;
+  await busy(t("deleting"), async () => {
+    const res = await api("/api/recordings/delete", { method: "POST", body: { ids: [...pick.ids] } });
+    const gone = state.rec && pick.ids.has(state.rec.id);
+    pick.on = false; pick.ids.clear();
+    if (gone) state.rec = null;
+    await loadRecs(); await loadSpeakers();
+    if (gone) {
+      if (state.recs.length) openRec(state.recs[state.recs.length - 1].id);
+      else $("#main").innerHTML = `<div class="empty">${t("noRecsShort")}</div>`;
+    }
+    toast(t("deletedMany", { n: res.deleted }) + (res.kept_files.length ? t("keptFiles", { n: res.kept_files.length }) : ""));
+  });
+};
 
 async function openRec(id, focusStart) {
   stopDeviceView();

@@ -296,6 +296,16 @@ def test_delete_recording(server, tmp_path):
     assert e.value.code == 404
 
 
+def test_delete_many(server, tmp_path):
+    req = urllib.request.Request(server + "/api/import?name=a.m4a", data=b"abc", method="POST")
+    urllib.request.urlopen(req).read()
+    (job,) = wait_jobs(server)
+    r = jcall(server, "/api/recordings/delete", "POST", {"ids": [1, job["recording"], 99]})
+    assert r == {"deleted": 2, "kept_files": [str(tmp_path / "talk.m4a")]}  # 99: not there
+    assert jcall(server, "/api/recordings") == []
+    assert (tmp_path / "talk.m4a").exists() and not (tmp_path / "lib" / "a.m4a").exists()
+
+
 def test_unsure_word_candidates_and_correction(server, tmp_path):
     wid = jcall(server, "/api/recordings/1/segments")[0]["words"][1][4]
     FakeTranscriber.calls = 0
