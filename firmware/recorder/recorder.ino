@@ -491,6 +491,9 @@ void onConnect(uint16_t conn) {
   c->requestPHY();
   c->requestDataLengthUpdate();
   c->requestMtuExchange(247);
+  // Windows picks 30 ms otherwise, and three packets go out per interval: 24 KB/s. Ask for 7.5 ms
+  // (the computer may settle on 15): more packets per second, for transfers and live audio.
+  c->requestConnectionParameter(6);
 }
 
 void onDisconnect(uint16_t, uint8_t) {
@@ -740,6 +743,6 @@ void loop() {
     busy = true;
   }
   for (int i = 0; i < 4 && stepLive(); i++) busy = true;
-  for (int i = 0; i < 8 && job != NO_JOB && stepJob(); i++) busy = true;
+  for (int i = 0; i < 16 && job != NO_JOB && stepJob(); i++) busy = true;
   if (!busy) delay(10);  // lets the CPU sleep between blocks
 }
