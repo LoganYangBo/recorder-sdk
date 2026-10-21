@@ -56,8 +56,16 @@ deleted when it ends, and a Bluetooth sync drops files Whisper finds no speech i
 
 With the OLED connected (and the **Adafruit SSD1306** library installed from the Library
 Manager, with the libraries it asks for), the screen lights for 5 seconds at power-on and when
-the button is pressed: the state (`REC 1:23`, `LISTEN`, `PAUSED`, `NO CARD`), battery,
-Bluetooth and clock. With a screen the first press only lights it; pressing again while it's lit
+the button is pressed:
+
+```
+21:11              ᛒ  85% [■■■ ]     time, Bluetooth (when connected), battery
+● 1:23           ▁▂▃▅▆               recording for 1:23 (blinking dot) and the sound meter
+Today 4 clips 12 min                 recordings kept today
+```
+
+The middle line is `LISTEN` (with the meter: three bars or more starts a recording),
+`PAUSED` or `NO CARD`. Holding the button shows `Sleeping` before it goes dark. With a screen the first press only lights it; pressing again while it's lit
 pauses or resumes. Dark, it draws almost nothing. Without a screen the
 firmware works as before (without the library, set `USE_SCREEN` to 0 at the top of
 `recorder.ino`).

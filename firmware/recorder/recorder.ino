@@ -104,6 +104,7 @@ uint32_t outLen = 0, dataBytes = 0, samples = 0, sinceFlush = 0, notimeIndex = 0
 char path[32];
 uint32_t feedbackUntil = 0, recordingSince = 0;
 bool sleeping = false;
+void noteRecording();  // for the screen's daily count
 const uint32_t SLEEP_HOLD_MS = 2000;
 bool feedbackOn = false;
 time_t clockBase = 0;  // the clock reads clockBase when millis() == clockMs
@@ -337,7 +338,10 @@ void startListening() {
 
 void pauseListening() {
   PDM.end();
-  if (state == RECORDING && !drainAndFinish(head)) return fail();
+  if (state == RECORDING) {
+    if (!drainAndFinish(head)) return fail();
+    noteRecording();
+  }
   state = PAUSED;
 }
 
@@ -353,6 +357,7 @@ void endSegment() {
   bool keep = soundFrames >= MIN_SOUND_FRAMES;
   if (!drainAndFinish(scan)) return fail();  // the rest is the next pre-roll
   if (!keep) SD.remove(path);
+  else noteRecording();
   recent = 0;
   state = LISTENING;
 }
@@ -578,7 +583,7 @@ const uint32_t SCREEN_MS = 5000;
 #ifdef HAVE_SCREEN_LIB
 Adafruit_SSD1306 screen(128, 32, &Wire, -1);
 #endif
-bool haveScreen = false;
+bool haveScreen = false, screenShowing = false;
 uint32_t screenUntil = 0, screenDrawnAt = 0;
 
 void setupScreen() {
@@ -599,51 +604,142 @@ void showScreen() {
   screenDrawnAt = millis() - 1000;  // draw now
 }
 
-//   REC 1:23            (or LISTEN / PAUSED / NO CARD, large)
-//   BAT 78%   BT ON
-//   10-20 21:11         (or CLOCK NOT SET)
+// Recordings kept since midnight (or since power-on, without a clock), for the screen.
+uint16_t clipsToday = 0;
+uint32_t secondsToday = 0;
+int statsDay = -1;
+
+int today() {
+  if (!clockValid()) return -2;
+  return (int)(clockNow() / 86400);
+}
+
+void newDayStats() {
+  if (today() == statsDay) return;
+  statsDay = today();
+  clipsToday = 0;
+  secondsToday = 0;
+}
+
+void noteRecording() {
+  newDayStats();
+  clipsToday++;
+  secondsToday += (millis() - recordingSince) / 1000;
+}
+
+#ifdef HAVE_SCREEN_LIB
+void drawBluetooth(int x, int y) {  // the rune, 5 x 8
+  screen.drawLine(x + 2, y, x + 2, y + 7, SSD1306_WHITE);
+  screen.drawLine(x + 2, y, x + 4, y + 2, SSD1306_WHITE);
+  screen.drawLine(x + 4, y + 2, x, y + 5, SSD1306_WHITE);
+  screen.drawLine(x + 2, y + 7, x + 4, y + 5, SSD1306_WHITE);
+  screen.drawLine(x + 4, y + 5, x, y + 2, SSD1306_WHITE);
+}
+
+void drawBattery(int x, int y, int pct) {  // 16 x 8
+  screen.drawRect(x, y, 14, 8, SSD1306_WHITE);
+  screen.fillRect(x + 14, y + 2, 2, 4, SSD1306_WHITE);
+  if (pct > 0) screen.fillRect(x + 2, y + 2, max(1, pct * 10 / 100), 4, SSD1306_WHITE);
+}
+
+// How far the sound is above the room's noise: 0-8 bars, 3 or more is about where a
+// recording starts.
+void drawMeter(int x, int y) {
+  float ratio = level / max(noiseFloor, 1.0f);
+  int bars = ratio <= 1 ? 0 : min(8, (int)(log2f(ratio) * 2 + 0.5f));
+  for (int i = 0; i < 8; i++) {
+    int h = 3 + i;
+    if (i < bars) screen.fillRect(x + i * 6, y + 12 - h, 4, h, SSD1306_WHITE);
+    else screen.drawPixel(x + i * 6 + 1, y + 11, SSD1306_WHITE);
+  }
+}
+#endif
+
+//   21:11              BT  85% [###]
+//   (o) 1:23                ▁▂▃▅▆     REC with time and sound meter / LISTEN / PAUSED / NO CARD
+//   Today 4 clips 12 min
 void updateScreen() {
 #ifdef HAVE_SCREEN_LIB
-  static bool lit = false;
   if (!haveScreen) return;
   if (!screenOn()) {
-    if (lit) screen.ssd1306_command(SSD1306_DISPLAYOFF);  // about 10 uA when off
-    lit = false;
+    if (screenShowing) screen.ssd1306_command(SSD1306_DISPLAYOFF);  // about 10 uA when off
+    screenShowing = false;
     return;
   }
-  if (lit && millis() - screenDrawnAt < 1000) return;
+  if (screenShowing && millis() - screenDrawnAt < 200) return;  // 5 frames a second, for the meter
   screenDrawnAt = millis();
   char line[24];
   screen.clearDisplay();
   screen.setTextColor(SSD1306_WHITE);
-  screen.setTextSize(2);
-  screen.setCursor(0, 0);
-  if (state == RECORDING) {
-    uint32_t sec = (millis() - recordingSince) / 1000;
-    snprintf(line, sizeof line, "REC %lu:%02lu", (unsigned long)(sec / 60), (unsigned long)(sec % 60));
-    screen.print(line);
-  } else {
-    screen.print(state == LISTENING ? "LISTEN" : state == PAUSED ? "PAUSED" : "NO CARD");
-  }
   screen.setTextSize(1);
-  screen.setCursor(0, 16);
-  if (batteryPct >= 0) {
-    snprintf(line, sizeof line, "BAT %d%%", batteryPct);
-    screen.print(line);
-  }
-  screen.setCursor(72, 16);
-  screen.print(Bluefruit.connected() ? "BT ON" : "BT OFF");
-  screen.setCursor(0, 24);
+
+  screen.setCursor(0, 0);
   if (clockValid()) {
     time_t t = clockNow();
-    strftime(line, sizeof line, "%m-%d %H:%M", gmtime(&t));  // the clock holds local time
+    strftime(line, sizeof line, "%H:%M", gmtime(&t));  // the clock holds local time
     screen.print(line);
   } else {
-    screen.print("CLOCK NOT SET");
+    screen.print("--:--");
+  }
+  if (Bluefruit.connected()) drawBluetooth(72, 0);
+  if (batteryPct >= 0) {
+    snprintf(line, sizeof line, "%3d%%", batteryPct);
+    screen.setCursor(84, 0);
+    screen.print(line);
+    drawBattery(111, 0, batteryPct);
+  }
+
+  screen.setTextSize(2);
+  if (state == RECORDING) {
+    if ((millis() / 500) % 2) screen.fillCircle(5, 17, 5, SSD1306_WHITE);
+    else screen.drawCircle(5, 17, 5, SSD1306_WHITE);
+    uint32_t sec = (millis() - recordingSince) / 1000;
+    snprintf(line, sizeof line, "%lu:%02lu", (unsigned long)(sec / 60), (unsigned long)(sec % 60));
+    screen.setCursor(15, 10);
+    screen.print(line);
+  } else if (state == LISTENING) {
+    screen.setCursor(0, 10);
+    screen.print("LISTEN");
+  } else if (state == PAUSED) {
+    screen.fillRect(1, 11, 3, 12, SSD1306_WHITE);
+    screen.fillRect(7, 11, 3, 12, SSD1306_WHITE);
+    screen.setCursor(15, 10);
+    screen.print("PAUSED");
+  } else {
+    screen.setCursor(0, 10);
+    screen.print("NO CARD");
+  }
+  if (state == RECORDING || state == LISTENING) drawMeter(82, 11);
+
+  screen.setTextSize(1);
+  screen.setCursor(0, 25);
+  if (state == FAILED) {
+    screen.print("Press to retry");
+  } else if (!clockValid()) {
+    screen.print("Clock not set");
+  } else {
+    newDayStats();
+    snprintf(line, sizeof line, "Today %u clip%s %lu min", clipsToday, clipsToday == 1 ? "" : "s",
+             (unsigned long)((secondsToday + 30) / 60));
+    screen.print(line);
   }
   screen.display();
-  if (!lit) screen.ssd1306_command(SSD1306_DISPLAYON);
-  lit = true;
+  if (!screenShowing) screen.ssd1306_command(SSD1306_DISPLAYON);
+  screenShowing = true;
+#endif
+}
+
+// A word in large letters, for a moment (going to sleep).
+void flashScreen(const char* word) {
+#ifdef HAVE_SCREEN_LIB
+  if (!haveScreen) return;
+  screen.clearDisplay();
+  screen.setTextSize(2);
+  screen.setCursor(0, 9);
+  screen.print(word);
+  screen.display();
+  screen.ssd1306_command(SSD1306_DISPLAYON);
+  screenShowing = true;
 #endif
 }
 
@@ -651,6 +747,7 @@ void updateScreen() {
 
 void goToSleep() {
   if (state == LISTENING || state == RECORDING) pauseListening();  // closes the file
+  flashScreen("Sleeping");
   for (int i = 0; i < 3; i++) {  // three slow blinks: going to sleep
     digitalWrite(LED_BUILTIN, LOW);
     delay(200);
