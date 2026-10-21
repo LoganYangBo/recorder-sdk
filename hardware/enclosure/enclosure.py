@@ -151,7 +151,9 @@ def base():
             with Locations(Pos(BTN_X, y1, FLOOR - sink)):
                 Box(*BTN_P, sink + 0.01, align=BOTTOM, mode=Mode.SUBTRACT)
         # USB-C through the +x wall: a rounded slot
-        usb = Plane(origin=(OUTER[0] / 2 - WALL * 2, y1, FLOOR + USB_C_Z), x_dir=(0, 1, 0), z_dir=(1, 0, 0))
+        usb = Plane(
+            origin=(OUTER[0] / 2 - WALL * 2, y1, FLOOR + USB_C_Z), x_dir=(0, 1, 0), z_dir=(1, 0, 0)
+        )
         with BuildSketch(usb):
             SlotOverall(USB_C[0], USB_C[1])
         extrude(amount=WALL * 3, mode=Mode.SUBTRACT)
