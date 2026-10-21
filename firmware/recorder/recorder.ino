@@ -53,6 +53,11 @@ const uint32_t MIN_SOUND_FRAMES = 40;  // a file with less sound than this (0.64
 #ifndef VBAT_ENABLE
 #define VBAT_ENABLE 14
 #endif
+// The charger (BQ25101) charges at 50 mA unless P0.13 is pulled low, which makes it 100 mA:
+// about 4-5 hours instead of 8-9 for a 400 mAh cell, and still gentle on it (0.25 C).
+#ifndef PIN_CHARGING_CURRENT
+#define PIN_CHARGING_CURRENT 22
+#endif
 const float VBAT_SCALE = 3.0 / 4096 * (1000 + 510) / 510;
 const int LOW_BATTERY = 15;  // percent
 
@@ -716,6 +721,8 @@ void setup() {
   pinMode(BUTTON, INPUT_PULLUP);
   pinMode(VBAT_ENABLE, OUTPUT);
   digitalWrite(VBAT_ENABLE, LOW);
+  pinMode(PIN_CHARGING_CURRENT, OUTPUT);
+  digitalWrite(PIN_CHARGING_CURRENT, LOW);  // charge at 100 mA
   analogReference(AR_INTERNAL_3_0);
   analogReadResolution(12);
   setupBle();

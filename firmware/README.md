@@ -74,6 +74,9 @@ apps such as nRF Connect (standard battery service). The protocol is described i
 
 ## Battery
 
+The recorder charges over USB (any port or charger, same speed) at 100 mA: a 400 mAh cell
+fills in about 4-5 hours. The green light is on while it charges.
+
 The charge is estimated from the battery voltage, so it reads high while charging and jumps a
 little under load. `recorder device` shows it, as does `?` in the serial monitor
 (`bat=3.95 pct=69`).
