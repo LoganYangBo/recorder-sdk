@@ -732,6 +732,7 @@ void updateLed() {
 // One line per command, over USB serial or Bluetooth (src/recorder/clock.py, ble.py):
 //   ?           -> RECORDER 3 <20261020T093000|unset> <LISTEN|REC|PAUSED|FAILED> <file|->
 //                  dropped=<n> level=<now> floor=<noise floor> bat=<volts> pct=<percent>
+//                  screen=<ok|none|nolib>
 //   T<seconds>  -> OK 20261020T093000   (local wall-clock time, counted as if it were UTC)
 // Bluetooth only:
 //   L                -> F <path> <size> per finished file, then END
@@ -774,7 +775,13 @@ void command(const char* line, Print& out, bool ble) {
     out.print(" bat=");
     out.print(vbat, 2);
     out.print(" pct=");
-    out.println(batteryPct);
+    out.print(batteryPct);
+    out.print(" screen=");  // ok, none (not found at power-on) or nolib (library not installed)
+#ifdef HAVE_SCREEN_LIB
+    out.println(haveScreen ? "ok" : "none");
+#else
+    out.println("nolib");
+#endif
   } else if (!ble) {
     out.println("ERR bluetooth only");
   } else if (line[0] == 'X') {
