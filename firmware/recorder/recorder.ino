@@ -580,6 +580,11 @@ void setupBle() {
 // ---- screen ----
 
 const uint32_t SCREEN_MS = 5000;
+const char* OWNER = "Bo";             // greeted at power-on and on waking; "" for no name
+const uint32_t HELLO_MS = 1600;       // the hello animation at power-on and on waking
+uint32_t helloUntil = 0;
+uint8_t waveHistory[48];              // the sound level, one column every 100 ms
+uint8_t waveAt = 0;
 #ifdef HAVE_SCREEN_LIB
 Adafruit_SSD1306 screen(128, 32, &Wire, -1);
 #endif
@@ -592,7 +597,8 @@ void setupScreen() {
   Wire.beginTransmission(0x3C);
   if (Wire.endTransmission() != 0) return;  // nothing connected
   haveScreen = screen.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-  screenUntil = millis() + SCREEN_MS;
+  screenUntil = millis() + HELLO_MS + SCREEN_MS;
+  helloUntil = millis() + HELLO_MS;
   screenDrawnAt = millis() - 1000;
 #endif
 }
@@ -642,18 +648,84 @@ void drawBattery(int x, int y, int pct) {  // 16 x 8
   if (pct > 0) screen.fillRect(x + 2, y + 2, max(1, pct * 10 / 100), 4, SSD1306_WHITE);
 }
 
-// How far the sound is above the room's noise: 0-8 bars, 3 or more is about where a
-// recording starts.
-void drawMeter(int x, int y) {
-  float ratio = level / max(noiseFloor, 1.0f);
-  int bars = ratio <= 1 ? 0 : min(8, (int)(log2f(ratio) * 2 + 0.5f));
-  for (int i = 0; i < 8; i++) {
-    int h = 3 + i;
-    if (i < bars) screen.fillRect(x + i * 6, y + 12 - h, 4, h, SSD1306_WHITE);
-    else screen.drawPixel(x + i * 6 + 1, y + 11, SSD1306_WHITE);
+// The level of the last few seconds, scrolling left: each column is how far the sound was
+// above the room's noise, mirrored around the middle line. A recording starts at about
+// half height.
+void drawWave(int x, int mid) {
+  for (int i = 0; i < 48; i += 2) {
+    int h = waveHistory[(waveAt + i) % 48];
+    screen.drawFastVLine(x + i, mid - h, 2 * h + 1, SSD1306_WHITE);
   }
 }
+
+// Power-on and waking: sound bars rise in a wave, then the greeting types itself out.
+void drawHello(uint32_t t) {
+  for (int i = 0; i < 9; i++) {
+    float phase = t / 90.0f - i * 0.7f;
+    int h = phase < 0 ? 0 : (int)(3 + 4 * fabsf(sinf(phase)) * min(1.0f, phase / 3));
+    screen.fillRect(2 + i * 4, 16 - h, 2, 2 * h, SSD1306_WHITE);
+  }
+  char text[24];
+  const char* hello = "Hello";
+  if (clockValid()) {
+    time_t now = clockNow();
+    int hour = gmtime(&now)->tm_hour;
+    hello = hour < 5 ? "Hi" : hour < 12 ? "Morning" : hour < 18 ? "Hi" : "Evening";
+  }
+  snprintf(text, sizeof text, OWNER[0] ? "%s, %s" : "%s", hello, OWNER);
+  int shown = t < 300 ? 0 : min((int)strlen(text), (int)((t - 300) / 60));
+  text[shown] = 0;
+  screen.setTextSize(1);
+  screen.setCursor(42, 4);
+  screen.print(text);
+  if (t > 900) {
+    screen.setCursor(42, 18);
+    screen.print("listening...");
+  }
+  if ((t / 250) % 2 && shown < (int)strlen(text) + 1) screen.fillRect(42 + shown * 6, 4, 5, 8, SSD1306_WHITE);
+}
+
 #endif
+
+// Going to sleep: a moon and some Zs floating up, with the LED's three slow blinks.
+void playGoodnight() {
+  for (uint32_t t = 0; t < 1200; t += 50) {
+    digitalWrite(LED_BUILTIN, (t / 200) % 2 ? HIGH : LOW);
+#ifdef HAVE_SCREEN_LIB
+    if (haveScreen) {
+      screen.clearDisplay();
+      screen.fillCircle(12, 16, 9, SSD1306_WHITE);  // a crescent: a circle with a bite
+      screen.fillCircle(17, 13, 8, SSD1306_BLACK);
+      screen.setTextSize(1);
+      screen.setCursor(34, 12);
+      screen.print("Good night");
+      for (int z = 0; z < 3; z++) {
+        int age = (int)t - z * 300;
+        if (age < 0) continue;
+        screen.setTextSize(z == 2 ? 2 : 1);
+        screen.setCursor(100 + z * 8, 22 - age / 60 - z * 4);
+        screen.print("z");
+      }
+      screen.display();
+      screen.ssd1306_command(SSD1306_DISPLAYON);
+      screenShowing = true;
+    }
+#endif
+    delay(50);
+  }
+  digitalWrite(LED_BUILTIN, HIGH);
+}
+
+// Every 100 ms, whether the screen is on or not, so the wave has a past when it lights up.
+void sampleWave() {
+  static uint32_t at = 0;
+  if (millis() - at < 100) return;
+  at = millis();
+  float ratio = level / max(noiseFloor, 1.0f);
+  int h = (state == LISTENING || state == RECORDING) && ratio > 1 ? (int)(log2f(ratio) * 2.5f) : 0;
+  waveHistory[waveAt] = min(h, 7);
+  waveAt = (waveAt + 1) % 48;
+}
 
 //   21:11              BT  85% [###]
 //   (o) 1:23                ▁▂▃▅▆     REC with time and sound meter / LISTEN / PAUSED / NO CARD
@@ -661,16 +733,25 @@ void drawMeter(int x, int y) {
 void updateScreen() {
 #ifdef HAVE_SCREEN_LIB
   if (!haveScreen) return;
+  sampleWave();
   if (!screenOn()) {
     if (screenShowing) screen.ssd1306_command(SSD1306_DISPLAYOFF);  // about 10 uA when off
     screenShowing = false;
     return;
   }
-  if (screenShowing && millis() - screenDrawnAt < 200) return;  // 5 frames a second, for the meter
+  bool hello = (int32_t)(helloUntil - millis()) > 0;
+  if (screenShowing && millis() - screenDrawnAt < (hello ? 40u : 100u)) return;
   screenDrawnAt = millis();
   char line[24];
   screen.clearDisplay();
   screen.setTextColor(SSD1306_WHITE);
+  if (hello) {
+    drawHello(HELLO_MS - (helloUntil - millis()));
+    screen.display();
+    if (!screenShowing) screen.ssd1306_command(SSD1306_DISPLAYON);
+    screenShowing = true;
+    return;
+  }
   screen.setTextSize(1);
 
   screen.setCursor(0, 0);
@@ -681,7 +762,8 @@ void updateScreen() {
   } else {
     screen.print("--:--");
   }
-  if (Bluefruit.connected()) drawBluetooth(72, 0);
+  bool busyBt = job != NO_JOB || liveOn;  // blinks while sending files or live audio
+  if (Bluefruit.connected() && (!busyBt || (millis() / 150) % 2)) drawBluetooth(72, 0);
   if (batteryPct >= 0) {
     snprintf(line, sizeof line, "%3d%%", batteryPct);
     screen.setCursor(84, 0);
@@ -709,7 +791,7 @@ void updateScreen() {
     screen.setCursor(0, 10);
     screen.print("NO CARD");
   }
-  if (state == RECORDING || state == LISTENING) drawMeter(82, 11);
+  if (state == RECORDING || state == LISTENING) drawWave(80, 16);
 
   screen.setTextSize(1);
   screen.setCursor(0, 25);
@@ -729,31 +811,11 @@ void updateScreen() {
 #endif
 }
 
-// A word in large letters, for a moment (going to sleep).
-void flashScreen(const char* word) {
-#ifdef HAVE_SCREEN_LIB
-  if (!haveScreen) return;
-  screen.clearDisplay();
-  screen.setTextSize(2);
-  screen.setCursor(0, 9);
-  screen.print(word);
-  screen.display();
-  screen.ssd1306_command(SSD1306_DISPLAYON);
-  screenShowing = true;
-#endif
-}
-
 // ---- button, LED, commands ----
 
 void goToSleep() {
   if (state == LISTENING || state == RECORDING) pauseListening();  // closes the file
-  flashScreen("Sleeping");
-  for (int i = 0; i < 3; i++) {  // three slow blinks: going to sleep
-    digitalWrite(LED_BUILTIN, LOW);
-    delay(200);
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(200);
-  }
+  playGoodnight();  // three slow blinks, and the moon on the screen
   job = NO_JOB;
   liveOn = false;
   Bluefruit.Advertising.restartOnDisconnect(false);
@@ -769,7 +831,11 @@ void wakeUp() {
   Bluefruit.Advertising.start(0);
   readBattery();
   onPress();  // starts listening (or retries the card), with the usual LED feedback
-  if (haveScreen) showScreen();
+  if (haveScreen) {
+    showScreen();
+    screenUntil += HELLO_MS;
+    helloUntil = millis() + HELLO_MS;
+  }
 }
 
 // Acts on release for a short press, so that holding for 2 s can mean sleep instead.

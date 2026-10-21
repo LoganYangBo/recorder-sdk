@@ -59,13 +59,15 @@ Manager, with the libraries it asks for), the screen lights for 5 seconds at pow
 the button is pressed:
 
 ```
-21:11              ᛒ  85% [■■■ ]     time, Bluetooth (when connected), battery
-● 1:23           ▁▂▃▅▆               recording for 1:23 (blinking dot) and the sound meter
-Today 4 clips 12 min                 recordings kept today
+16:00            ᛒ  69% [■■■ ]     time, Bluetooth (blinks while sending), battery
+● 0:05      ||||·||||||·||||       recording for 0:05 and the last few seconds of sound
+Today 3 clips 12 min               recordings kept today
 ```
 
-The middle line is `LISTEN` (with the meter: three bars or more starts a recording),
-`PAUSED` or `NO CARD`. Holding the button shows `Sleeping` before it goes dark. With a screen the first press only lights it; pressing again while it's lit
+The middle line is `LISTEN` (with the sound wave: about half height starts a recording),
+`PAUSED` or `NO CARD`. Power-on and waking play a short hello (sound bars and a greeting with
+the name in `OWNER` at the top of the screen section); going to sleep shows a moon and
+"Good night". With a screen the first press only lights it; pressing again while it's lit
 pauses or resumes. Dark, it draws almost nothing. Without a screen the
 firmware works as before (without the library, set `USE_SCREEN` to 0 at the top of
 `recorder.ino`).
