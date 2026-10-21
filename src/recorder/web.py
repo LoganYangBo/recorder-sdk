@@ -1029,7 +1029,10 @@ def serve(
     import faulthandler
     from importlib.util import find_spec
 
-    faulthandler.enable()  # a crash in a native library (GPU, Bluetooth) prints where it was
+    try:  # a crash in a native library (GPU, Bluetooth) then prints where it was
+        faulthandler.enable()
+    except (OSError, ValueError, AttributeError):  # stderr isn't a real file (tests)
+        pass
     aligner = "auto" if find_spec("torchaudio") else None
     app = App(db, device=device, library=library, whisper=whisper, aligner=aligner)
     with Store(db) as store:  # create / migrate the database before the first request
