@@ -1,23 +1,28 @@
-"""Recorder enclosure: a box that sticks to the back of a phone (MagSafe).
+"""Recorder enclosure: a thin slab that sticks to the back of a phone (MagSafe).
 
-Run `python enclosure.py` (needs build123d) to write base.stl, lid.stl and button.stl next to
-this file. Every size is a parameter below: measure the parts with calipers and change them.
+Run `python enclosure.py` (needs build123d) to write base.stl and lid.stl next to this file.
+Every size is a parameter below; change them and run it again.
 
-Stack, from the phone up:
-    floor with four 6 x 2 mm disc magnets on the MagSafe ring (glued in from inside)
-    battery (602040)
-    XIAO (USB-C out of the +x end) and the SD module, side by side
-    under the lid: the OLED behind its window (over the SD end), the button and the LED hole
-    (over the XIAO); the mic hears through holes in both long walls, level with it
-The lid presses into the base on a lip (a drop of glue or a strip of tape holds it for good).
+Everything lies side by side in one layer, each part in its own pocket, so nothing needs glue:
+
+    +----------------------------------------------+
+    | button | battery              | XIAO     USB-C>
+    |--------+----------------------+--------------|
+    | OLED (glass up)          | SD module          |
+    +----------------------------------------------+
+
+The pockets' walls are lower than the parts, so the wires run over them. The lid snaps on
+(bumps on its lip click into grooves in the base) and presses everything down. The button is a
+tongue cut into the lid: press it and its nub presses the switch. Four thin disc magnets sit in
+the floor on the MagSafe ring.
 """
 
 from math import cos, radians, sin
 from pathlib import Path
 
 from build123d import (
-    Axis,
     Align,
+    Axis,
     Box,
     BuildPart,
     Cylinder,
@@ -29,117 +34,138 @@ from build123d import (
 )
 
 HERE = Path(__file__).parent
+BOTTOM = (Align.CENTER, Align.CENTER, Align.MIN)
 
-# ---- parts (mm) -- measure yours ----
-BATTERY = (40.0, 20.0, 6.3)  # 602040, a little swollen when full
-XIAO = (21.0, 17.8, 4.2)  # board, height with the USB-C plug and parts
-SD = (18.5, 14.5, 3.5)  # mini SD module with the card in
-OLED = (38.0, 12.0, 3.2)  # 0.91" module: board, height with the glass
-OLED_VIEW = (23.0, 6.5)  # the lit area, centred on the glass
-OLED_VIEW_SHIFT = -2.5  # the glass sits towards one end of the board (+x)
-BUTTON = (6.2, 6.2, 5.0)  # 6 x 6 tact switch, body + plunger height
-MAGNET = (6.2, 2.1)  # disc magnet diameter, thickness (+ clearance)
-USB_C = (9.6, 3.8)  # the opening for the plug
+# ---- parts, measured (mm): length x width ----
+PART_H = 4.6  # the thickest part (the XIAO with its USB-C)
+BATTERY = (40.6, 19.8)
+XIAO = (22.4, 17.8)
+SD = (27.6, 17.7)  # with the card in
+OLED = (38.3, 12.2)
+OLED_GLASS = (30.0, 11.5)  # the glass on the module's board, shown through the window
+OLED_GLASS_FROM_END = 1.0  # glass edge from the board's end away from the pins (-x end)
+BUTTON = (6.2, 6.2, 5.0)  # 6 x 6 tact switch: body, height to the top of the plunger
+MAGNET = (8.0, 1.0)  # thin disc magnets: diameter, thickness
+USB_C = (9.6, 3.6)  # the opening for the plug
+USB_C_Z = 2.6  # its middle, above the pocket floor
 
 # ---- case ----
-WALL = 1.6
-FLOOR_SKIN = 0.6  # plastic between the magnets and the phone: thinner holds better
-LID = 1.4
-LIP = 1.6  # how deep the lid's lip goes into the base
-FIT = 0.25  # clearance for parts and the lip
+WALL = 1.4
+FLOOR_SKIN = 0.5  # plastic between the magnets and the phone
+LID = 1.0
+FIT = 0.2  # around each part
+DIVIDER = 1.0  # pocket walls: thickness...
+DIVIDER_H = 3.0  # ...and height (the wires run over them)
+LIP = 1.2  # the lid's lip, down inside the walls
+SNAP = 0.35  # how far the snap bumps stick out
 CORNER = 3.0
 
 MAGSAFE_RADIUS = 25.0  # the phone's magnet ring, to the middle of the magnets
-MAGNET_ANGLES = (25, -25, 155, -155)  # where on the ring the four magnets sit
+MAGNET_ANGLES = (35, 145, 215, 325)  # kept inside the 42 mm width
 
-INNER_L = 52.8
-INNER_W = 28.8
+# ---- layout ----
 FLOOR = FLOOR_SKIN + MAGNET[1]
-BOARDS_Z = FLOOR + BATTERY[2] + 0.4  # where the XIAO and SD module sit
-TOP_LAYER = max(OLED[2], BUTTON[2] - LID) + 0.6  # under the lid: OLED and button
-INNER_H = BATTERY[2] + 0.4 + max(XIAO[2], SD[2]) + TOP_LAYER
-OUTER = (INNER_L + 2 * WALL, INNER_W + 2 * WALL)
-BASE_H = FLOOR + INNER_H
+CAVITY_H = PART_H + 0.2
 
-# positions in the cavity (x along the length, 0 = middle)
-XIAO_X = INNER_L / 2 - XIAO[0] / 2 - 0.5  # against the USB end
-SD_X = -INNER_L / 2 + SD[0] / 2 + 0.5
-OLED_X = -INNER_L / 2 + OLED[0] / 2 + 1.0
-BUTTON_X = INNER_L / 2 - 8.0
-MIC_FROM_USB = 16.0  # where the mic is along the XIAO, from its USB end: measure it
-MIC_X = INNER_L / 2 - 0.5 - MIC_FROM_USB
-LED_HOLE = (INNER_L / 2 - 3.5, 6.0)  # over the XIAO's LED, by the USB end: it must show
+
+def pocket(size):
+    return (size[0] + 2 * FIT, size[1] + 2 * FIT)
+
+
+BTN_P, BAT_P, XIAO_P = pocket(BUTTON), pocket(BATTERY), pocket(XIAO)
+OLED_P, SD_P = pocket(OLED), pocket(SD)
+ROW1_W = max(BTN_P[1], BAT_P[1], XIAO_P[1])
+ROW2_W = max(OLED_P[1], SD_P[1])
+INNER_L = max(BTN_P[0] + DIVIDER + BAT_P[0] + DIVIDER + XIAO_P[0], OLED_P[0] + DIVIDER + SD_P[0])
+INNER_W = ROW1_W + DIVIDER + ROW2_W
+OUTER = (INNER_L + 2 * WALL, INNER_W + 2 * WALL)
+BASE_H = FLOOR + CAVITY_H
+THICKNESS = BASE_H + LID
+
+x0, y1, y2 = -INNER_L / 2, INNER_W / 2 - ROW1_W / 2, -INNER_W / 2 + ROW2_W / 2
+BTN_X = x0 + BTN_P[0] / 2
+BAT_X = x0 + BTN_P[0] + DIVIDER + BAT_P[0] / 2
+XIAO_X = INNER_L / 2 - XIAO_P[0] / 2  # against the +x wall, USB-C through it
+OLED_X = x0 + OLED_P[0] / 2
+SD_X = INNER_L / 2 - SD_P[0] / 2
+GLASS_X = OLED_X - OLED[0] / 2 + OLED_GLASS_FROM_END + OLED_GLASS[0] / 2
 
 
 def base():
     with BuildPart() as p:
-        Box(*OUTER, BASE_H, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        Box(*OUTER, BASE_H, align=BOTTOM)
         fillet(p.edges().filter_by(Axis.Z), CORNER)
         with Locations(Pos(0, 0, FLOOR)):
-            Box(
-                INNER_L,
-                INNER_W,
-                INNER_H + 1,
-                align=(Align.CENTER, Align.CENTER, Align.MIN),
-                mode=Mode.SUBTRACT,
-            )
+            Box(INNER_L, INNER_W, CAVITY_H + 1, align=BOTTOM, mode=Mode.SUBTRACT)
+        # magnets, flush with the floor (the parts lie on them)
         for a in MAGNET_ANGLES:
             x, y = MAGSAFE_RADIUS * cos(radians(a)), MAGSAFE_RADIUS * sin(radians(a))
             with Locations(Pos(x, y, FLOOR_SKIN)):
-                Cylinder(
-                    MAGNET[0] / 2,
-                    MAGNET[1] + 0.1,
-                    align=(Align.CENTER, Align.CENTER, Align.MIN),
-                    mode=Mode.SUBTRACT,
-                )
-        # USB-C through the +x wall, level with the XIAO's plug
-        with Locations(Pos(OUTER[0] / 2, 0, BOARDS_Z + 1.2 + USB_C[1] / 2)):
+                Cylinder(MAGNET[0] / 2 + 0.1, MAGNET[1] + 0.1, align=BOTTOM, mode=Mode.SUBTRACT)
+        # pocket walls: one between the rows, and the ones across each row
+        with Locations(Pos(0, INNER_W / 2 - ROW1_W - DIVIDER / 2, FLOOR)):
+            Box(INNER_L, DIVIDER, DIVIDER_H, align=BOTTOM)
+        for x, y, w in (
+            (x0 + BTN_P[0] + DIVIDER / 2, y1, ROW1_W),
+            (XIAO_X - XIAO_P[0] / 2 - DIVIDER / 2, y1, ROW1_W),
+            (OLED_X + OLED_P[0] / 2 + DIVIDER / 2, y2, ROW2_W),
+            (SD_X - SD_P[0] / 2 - DIVIDER / 2, y2, ROW2_W),
+        ):
+            with Locations(Pos(x, y, FLOOR)):
+                Box(DIVIDER, w, DIVIDER_H, align=BOTTOM)
+        # the button sits lower, so its plunger ends just under the lid's tongue
+        sink = max(0.0, BUTTON[2] - (CAVITY_H - 0.3))
+        if sink:
+            with Locations(Pos(BTN_X, y1, FLOOR - sink)):
+                Box(*BTN_P, sink + 0.01, align=BOTTOM, mode=Mode.SUBTRACT)
+        # USB-C through the +x wall
+        with Locations(Pos(OUTER[0] / 2, y1, FLOOR + USB_C_Z)):
             Box(WALL * 3, USB_C[0], USB_C[1], mode=Mode.SUBTRACT)
-        # mic: three small holes through each long wall, level with the board
-        for dx in (-2, 0, 2):
-            for side in (-1, 1):
-                with Locations(Pos(MIC_X + dx, side * OUTER[1] / 2, BOARDS_Z + 2.0)):
-                    Box(1.0, WALL * 3, 1.0, mode=Mode.SUBTRACT)
-        # low ribs that keep the battery from sliding
+        # grooves for the lid's snap bumps, on the long walls
         for sx in (-1, 1):
-            with Locations(Pos(sx * (BATTERY[0] / 2 + FIT + 0.6), 0, FLOOR)):
-                Box(1.2, BATTERY[1] * 0.6, 2.0, align=(Align.CENTER, Align.CENTER, Align.MIN))
+            for side in (-1, 1):
+                with Locations(Pos(sx * INNER_L / 4, side * INNER_W / 2, BASE_H - LIP / 2)):
+                    Box(14, 2 * (SNAP + 0.1), 0.7, mode=Mode.SUBTRACT)
+        # a notch to get a fingernail under the lid
+        with Locations(Pos(-OUTER[0] / 2, 0, BASE_H)):
+            Box(WALL * 3, 8, 1.2, mode=Mode.SUBTRACT)
     return p.part
 
 
 def lid():
-    lip_l, lip_w = INNER_L - 2 * FIT, INNER_W - 2 * FIT
+    lip_l, lip_w = INNER_L - 2 * 0.15, INNER_W - 2 * 0.15
     with BuildPart() as p:
-        Box(*OUTER, LID, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        Box(*OUTER, LID, align=BOTTOM)
         fillet(p.edges().filter_by(Axis.Z), CORNER)
-        with Locations(Pos(0, 0, -LIP)):  # the lip goes down into the base
-            Box(lip_l, lip_w, LIP, align=(Align.CENTER, Align.CENTER, Align.MIN))
-            Box(
-                lip_l - 2.4,
-                lip_w - 2.4,
-                LIP,
-                align=(Align.CENTER, Align.CENTER, Align.MIN),
-                mode=Mode.SUBTRACT,
-            )
-        # OLED window, and a pocket underneath that holds the module's board
-        with Locations(Pos(OLED_X + OLED_VIEW_SHIFT, 0, 0)):
-            Box(*OLED_VIEW, LID * 3, mode=Mode.SUBTRACT)
-        with Locations(Pos(BUTTON_X, 0, 0)):
-            Cylinder(2.2, LID * 3, mode=Mode.SUBTRACT)  # the cap's stem goes through
-        with Locations(Pos(*LED_HOLE, 0)):
-            Cylinder(1.0, LID * 3, mode=Mode.SUBTRACT)
-    return p.part
-
-
-def button_cap():
-    """A cap that sits in the lid's hole and presses the switch underneath."""
-    with BuildPart() as p:
-        Cylinder(2.0, LID + 0.8, align=(Align.CENTER, Align.CENTER, Align.MIN))  # the stem
-        Cylinder(3.0, 0.6, align=(Align.CENTER, Align.CENTER, Align.MIN))  # a flange inside
+        with Locations(Pos(0, 0, -LIP)):  # the lip, inside the walls
+            Box(lip_l, lip_w, LIP, align=BOTTOM)
+            Box(lip_l - 2.0, lip_w - 2.0, LIP, align=BOTTOM, mode=Mode.SUBTRACT)
+        for sx in (-1, 1):  # snap bumps
+            for side in (-1, 1):
+                with Locations(Pos(sx * INNER_L / 4, side * (lip_w / 2), -LIP / 2)):
+                    Box(12, 2 * SNAP, 0.5)
+        # the OLED's window
+        with Locations(Pos(GLASS_X, y2, 0)):
+            Box(OLED_GLASS[0] - 1.0, OLED_GLASS[1] - 2.0, LID * 3, mode=Mode.SUBTRACT)
+        # the button: a tongue (a U-shaped cut) with a nub underneath
+        tongue = (10.0, 7.0)  # free end over the switch, hinged towards the middle
+        tongue_x = BTN_X - 2.0 + tongue[0] / 2
+        with Locations(Pos(tongue_x, y1, 0)):
+            Box(tongue[0] + 1.2, tongue[1] + 1.2, LID * 3, mode=Mode.SUBTRACT)
+            Box(tongue[0], tongue[1], LID, align=BOTTOM)
+        with Locations(Pos(tongue_x + tongue[0] / 2 + 0.3, y1, 0)):  # its hinge
+            Box(0.8, tongue[1], LID, align=BOTTOM)
+        with Locations(Pos(BTN_X, y1, -0.3)):
+            Cylinder(1.5, 0.3, align=BOTTOM)  # the nub
+        # holes over the XIAO for its mic and LEDs (the recording light must show)
+        for dx in range(-8, 9, 4):
+            for dy in (-4, 0, 4):
+                with Locations(Pos(XIAO_X + dx, y1 + dy, 0)):
+                    Cylinder(0.6, LID * 3, mode=Mode.SUBTRACT)
     return p.part
 
 
 if __name__ == "__main__":
-    for name, part in (("base", base()), ("lid", lid()), ("button", button_cap())):
+    for name, part in (("base", base()), ("lid", lid())):
         export_stl(part, str(HERE / f"{name}.stl"))
-    print(f"outer {OUTER[0]:.1f} x {OUTER[1]:.1f} x {BASE_H + LID:.1f} mm")
+    print(f"outer {OUTER[0]:.1f} x {OUTER[1]:.1f} x {THICKNESS:.1f} mm")
