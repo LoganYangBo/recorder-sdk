@@ -34,6 +34,7 @@ from build123d import (
     Box,
     BuildPart,
     BuildSketch,
+    Circle,
     Cylinder,
     Locations,
     Mode,
@@ -79,12 +80,18 @@ BOTTOM_EDGE = 1.5  # rounding of the edge against the phone (makes the slab look
 
 WINDOW = (27.0, 8.0)  # the screen window...
 BEZEL = 1.2  # ...and the shallow step around it
-BUTTON_PAD = 9.0  # the round button's diameter
-SLIT = 0.6  # the cut around it
-HINGE = (3.0, 0.5)  # where it stays joined to the lid: width, thinned to this thickness
+# the button: "cap" is a separate key (print it in another colour) poking through the lid,
+# "pad" is a round pad cut free from the lid itself
+BUTTON_STYLE = "cap"
+CAP = (6.6, 6.6)  # the key seen from above: equal for round, longer y for a pill
+CAP_PROUD = 0.5  # how far it stands above the lid
+CAP_FLANGE = (6.0, 12.0, 0.6)  # the bar under the lid that keeps it from falling out
+BUTTON_PAD = 9.0  # "pad": its diameter...
+SLIT = 0.6  # ...the cut around it...
+HINGE = (3.0, 0.5)  # ...and where it stays joined to the lid: width, thinned to this thickness
 GRILLE = (19.0, 13.0)  # the field of holes over the XIAO (mic, LEDs)
 GRILLE_HOLE, GRILLE_PITCH = 1.0, 1.8
-OWNER = "Bo"  # engraved in the corner; "" for none
+OWNER = ""  # engraved in the corner, e.g. "Bo"; "" for none
 
 MAGSAFE_RADIUS = 25.0  # the phone's magnet ring, to the middle of the magnets
 MAGNET_ANGLES = (35, 145, 215, 325)  # kept inside the width
@@ -108,6 +115,7 @@ OUTER = (INNER_L + 2 * WALL, INNER_W + 2 * WALL)
 PANEL = (OUTER[0] - 2 * FRAME, OUTER[1] - 2 * FRAME)
 THICKNESS = FLOOR + CAVITY_H + LID
 LEDGE_Z = FLOOR + CAVITY_H  # the lid panel rests here
+BUTTON_GAP = CAP_FLANGE[2] + 0.1 if BUTTON_STYLE == "cap" else 0.3  # above the plunger
 
 x0, y1, y2 = -INNER_L / 2, INNER_W / 2 - ROW1_W / 2, -INNER_W / 2 + ROW2_W / 2
 OLED_X = x0 + OLED_P[0] / 2
@@ -145,8 +153,8 @@ def base():
         ):
             with Locations(Pos(x, y, FLOOR)):
                 Box(DIVIDER, w, DIVIDER_H, align=BOTTOM)
-        # the button sits lower, so its plunger ends just under the lid
-        sink = max(0.0, BUTTON[2] - (CAVITY_H - 0.3))
+        # the switch sits lower, so its plunger ends just under the lid (or the key's bar)
+        sink = max(0.0, BUTTON[2] - (CAVITY_H - BUTTON_GAP))
         if sink:
             with Locations(Pos(BTN_X, y1, FLOOR - sink)):
                 Box(*BTN_P, sink + 0.01, align=BOTTOM, mode=Mode.SUBTRACT)
@@ -168,6 +176,43 @@ def base():
     return p.part
 
 
+def pad():
+    """The "pad" button: a round pad cut free from the lid except for a hinge."""
+    r = BUTTON_PAD / 2
+    with Locations(Pos(BTN_X, y1, -1)):
+        Cylinder(r + SLIT, LID + 2, align=BOTTOM, mode=Mode.SUBTRACT)
+    with Locations(Pos(BTN_X, y1, 0)):
+        Cylinder(r, LID, align=BOTTOM)
+    with Locations(Pos(BTN_X, y1 - r - SLIT / 2, LID / 2)):
+        Box(HINGE[0], SLIT + 0.4, LID)
+    with Locations(Pos(BTN_X, y1 - r - SLIT / 2, 0)):  # thinned from below so it bends
+        Box(HINGE[0], SLIT + 3.0, LID - HINGE[1], align=BOTTOM, mode=Mode.SUBTRACT)
+    with Locations(Pos(BTN_X, y1, LID)):  # a slight dish to find it by touch
+        Cylinder(r - 1.2, 0.25, mode=Mode.SUBTRACT)
+    with Locations(Pos(BTN_X, y1, -0.3)):
+        Cylinder(1.5, 0.3, align=BOTTOM)  # the nub
+
+
+def cap_outline(grow=0.0):
+    w, h = CAP[0] + 2 * grow, CAP[1] + 2 * grow
+    if h > w:
+        SlotOverall(h, w, rotation=90)
+    else:
+        Circle(w / 2)
+
+
+def cap():
+    """The "cap" button: a key in the lid's hole, kept in by a bar under the lid."""
+    with BuildPart() as p:
+        with Locations(Pos(BTN_X, y1, LEDGE_Z - CAP_FLANGE[2])):
+            Box(*CAP_FLANGE, align=BOTTOM)
+        with BuildSketch(Plane.XY.offset(LEDGE_Z).move(Pos(BTN_X, y1))):
+            cap_outline()
+        extrude(amount=LID + CAP_PROUD)
+        fillet(p.edges().group_by(Axis.Z)[-1], 0.4)
+    return p.part
+
+
 def lid():
     w, h = PANEL[0] - 2 * LID_FIT, PANEL[1] - 2 * LID_FIT
     with BuildPart() as p:
@@ -186,20 +231,12 @@ def lid():
         with BuildSketch(Plane.XY.offset(-1).move(Pos(GLASS_X, y1))):
             RectangleRounded(*WINDOW, 1.2)
         extrude(amount=LID + 2, mode=Mode.SUBTRACT)
-        # the button: a round pad, cut free except for a hinge towards the bottom row
-        r = BUTTON_PAD / 2
-        with Locations(Pos(BTN_X, y1, -1)):
-            Cylinder(r + SLIT, LID + 2, align=BOTTOM, mode=Mode.SUBTRACT)
-        with Locations(Pos(BTN_X, y1, 0)):
-            Cylinder(r, LID, align=BOTTOM)
-        with Locations(Pos(BTN_X, y1 - r - SLIT / 2, LID / 2)):
-            Box(HINGE[0], SLIT + 0.4, LID)
-        with Locations(Pos(BTN_X, y1 - r - SLIT / 2, 0)):  # thinned from below so it bends
-            Box(HINGE[0], SLIT + 3.0, LID - HINGE[1], align=BOTTOM, mode=Mode.SUBTRACT)
-        with Locations(Pos(BTN_X, y1, LID)):  # a slight dish to find it by touch
-            Cylinder(r - 1.2, 0.25, mode=Mode.SUBTRACT)
-        with Locations(Pos(BTN_X, y1, -0.3)):
-            Cylinder(1.5, 0.3, align=BOTTOM)  # the nub
+        if BUTTON_STYLE == "cap":
+            with BuildSketch(Plane.XY.offset(-1).move(Pos(BTN_X, y1))):
+                cap_outline(0.2)
+            extrude(amount=LID + 2, mode=Mode.SUBTRACT)
+        else:
+            pad()
         # the grille over the XIAO: a staggered field of holes, for its mic and LEDs
         gx, gy = GRILLE[0] / 2 - GRILLE_HOLE, GRILLE[1] / 2 - GRILLE_HOLE
         row_step = GRILLE_PITCH * sqrt(3) / 2
@@ -222,6 +259,9 @@ def lid():
 
 
 if __name__ == "__main__":
-    for name, part in (("base", base()), ("lid", lid())):
+    parts = [("base", base()), ("lid", lid())]
+    if BUTTON_STYLE == "cap":
+        parts.append(("button", cap()))
+    for name, part in parts:
         export_stl(part, str(HERE / f"{name}.stl"), tolerance=0.02, angular_tolerance=0.2)
     print(f"outer {OUTER[0]:.1f} x {OUTER[1]:.1f} x {THICKNESS:.1f} mm")
