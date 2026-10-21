@@ -21,13 +21,25 @@ from .pipeline import Pipeline, file_sha256
 from .store import Store
 from .sync import AudioFile, AudioSource
 
-OPUS_BITRATE = 32000  # plenty for 16 kHz speech; Whisper accuracy is unaffected
+OPUS_BITRATE = 32000
+
+
+def has_speech(segments) -> bool:
+    """Whether a transcript holds anything Whisper actually heard as speech: some text that it
+    neither thinks is silence nor made up (noise often comes back empty, or as a stray
+    "Thank you." with low confidence)."""
+    return any(
+        s.text.strip()
+        and (s.no_speech_prob is None or s.no_speech_prob < 0.6)
+        and (s.avg_logprob is None or s.avg_logprob > -1.0)
+        for s in segments
+    )  # plenty for 16 kHz speech; Whisper accuracy is unaffected
 
 
 @dataclass
 class SyncResult:
     path: Path  # on the source
-    status: str  # new / known / failed / gave-up
+    status: str  # new / known / noise / failed / gave-up
     recording_id: int | None = None
     error: str | None = None
 
@@ -68,6 +80,7 @@ class Syncer:
         library: str | Path,
         compress: bool = True,
         delete_source: bool = False,
+        drop_noise: bool = False,
         max_attempts: int = 3,
         after: Callable[[int], None] | None = None,
         log: Callable[[str], None] = lambda msg: None,
@@ -77,6 +90,7 @@ class Syncer:
         self.library = Path(library)
         self.compress = compress
         self.delete_source = delete_source
+        self.drop_noise = drop_noise  # forget files with no speech (the recorder's false starts)
         self.max_attempts = max_attempts
         self.after = after  # called with each new recording id (e.g. suggest unsure words)
         self.log = log
@@ -103,6 +117,9 @@ class Syncer:
             self._cleanup(f.path, known.path)
             return SyncResult(f.path, "known", known.id)
         status = self.store.file_status(digest)
+        if status and status["status"] == "noise":
+            self._drop(f.path)
+            return SyncResult(f.path, "noise")
         if status and status["status"] == "failed" and not retry:
             if status["attempts"] >= self.max_attempts:
                 return SyncResult(f.path, "gave-up", error=status["error"])
@@ -118,6 +135,12 @@ class Syncer:
             error = f"{type(e).__name__}: {e}"
             self.store.set_file_status(digest, source, "failed", error=error)
             return SyncResult(f.path, "failed", error=error)
+        if self.drop_noise and not has_speech(self.store.segments(r.recording_id)):
+            self.store.delete(r.recording_id)
+            copy.unlink(missing_ok=True)
+            self.store.set_file_status(digest, source, "noise", path=None)
+            self._drop(f.path)
+            return SyncResult(f.path, "noise")
         self.store.set_file_status(digest, source, "done", recording_id=r.recording_id)
         if self.after:
             try:
@@ -147,4 +170,9 @@ class Syncer:
         if not self.delete_source or Path(copy).resolve() == source.resolve():
             return
         if Path(copy).is_file():
+            source.unlink(missing_ok=True)
+
+    def _drop(self, source: Path) -> None:
+        """Delete a noise-only file from the source: there is nothing to keep."""
+        if self.delete_source:
             source.unlink(missing_ok=True)

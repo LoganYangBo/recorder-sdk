@@ -235,7 +235,7 @@ def _sync_ble(args, run, store) -> bool:
     if files is None:
         return False
     results = run(_Files([local for _, local in files]), store) if files else []
-    done = {r.path for r in results if r.status in ("new", "known")}
+    done = {r.path for r in results if r.status in ("new", "known", "noise")}
     gone = [(card, local) for card, local in files if local in done]
     if args.delete and gone:
 
@@ -328,6 +328,7 @@ def cmd_sync(args) -> None:
             library,
             compress=not args.keep_wav,
             delete_source=args.delete,
+            drop_noise=args.ble,
             after=None
             if args.no_suggest
             else lambda rid: _suggest(store, transcriber, rid, aligner()),

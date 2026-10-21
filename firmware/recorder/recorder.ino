@@ -42,6 +42,8 @@ const uint32_t HANGOVER_BYTES = BYTES_PER_SEC * 10;  // end it after 10 s withou
 const float SOUND_RATIO = 3.0;  // a frame is sound when this many times above the noise floor...
 const float MIN_LEVEL = 30;     // ...and at least this loud (mean distance from silence)
 const int START_FRAMES = 5;     // sound frames among the last 16 that start a recording
+const uint32_t MIN_SOUND_FRAMES = 40;  // a file with less sound than this (0.64 s) is deleted
+                                       // when it ends: a knock or a door, not someone talking
 
 // Battery: the XIAO measures it through a divider (1M / 510k) on PIN_VBAT, switched on by
 // pulling VBAT_ENABLE low. Keep that pin low: high while charging can harm the input.
@@ -67,6 +69,7 @@ alignas(4) uint8_t ring[RING_SIZE];
 volatile uint32_t head = 0, tail = 0, dropped = 0;
 uint32_t scan = 0, lastSoundAt = 0, livePos = 0;
 uint16_t recent = 0;  // one bit per recent frame, 1 = sound
+uint32_t soundFrames = 0;  // in the file being recorded
 float level = 0, noiseFloor = 0;
 int16_t pdmBuf[256];
 int16_t pcm[BLOCK_SAMPLES];  // one block being encoded
@@ -231,7 +234,7 @@ void nextPath(uint32_t back) {
 
 bool startFile() {
   nextPath((scan - tail) / BYTES_PER_SEC);  // what's still buffered started that long ago
-  outLen = dataBytes = samples = sinceFlush = 0;
+  outLen = dataBytes = samples = sinceFlush = soundFrames = 0;
   SDLib::File f = SD.open(path, FILE_WRITE);
   if (!f) return false;
   writeHeader(f);
@@ -317,12 +320,15 @@ void pauseListening() {
 
 void startSegment() {
   if (!startFile()) return fail();
+  soundFrames = __builtin_popcount(recent);
   lastSoundAt = scan;
   state = RECORDING;
 }
 
 void endSegment() {
+  bool keep = soundFrames >= MIN_SOUND_FRAMES;
   if (!drainAndFinish(scan)) return fail();  // the rest is the next pre-roll
+  if (!keep) SD.remove(path);
   recent = 0;
   state = LISTENING;
 }
@@ -733,6 +739,7 @@ void loop() {
       if (__builtin_popcount(recent) >= START_FRAMES) startSegment();
     } else if (sound) {
       lastSoundAt = scan;
+      soundFrames++;
     } else if (scan - lastSoundAt > HANGOVER_BYTES) {
       endSegment();
     }

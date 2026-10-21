@@ -32,7 +32,8 @@ on Windows). The battery only charges while the switch is on.
 Switching on starts listening. A recording starts when the sound rises well above the room's
 background noise, keeps the second before it (so the first word isn't cut), and ends after
 10 seconds of quiet: one file per stretch of sound, at most 10 minutes each. Any loud sound
-triggers it, not only speech. The button pauses and resumes listening.
+triggers it, not only speech, but a file with under 0.64 s of sound in it (a knock, a door) is
+deleted when it ends, and a Bluetooth sync drops files Whisper finds no speech in. The button pauses and resumes listening.
 
 | LED | Meaning |
 |-----|---------|

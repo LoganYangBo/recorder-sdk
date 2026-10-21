@@ -587,14 +587,16 @@ class App:
                     if syncer is None:
                         labeler = self._labeler(store, threshold)
                         pipeline = Pipeline(self.transcriber(), store, labeler)
-                        syncer = Syncer(store, pipeline, self.library)
+                        syncer = Syncer(store, pipeline, self.library, drop_noise=True)
                     r = syncer.sync_file(AudioFile(dest, started_at_of(dest)))
                 if r.status == "new":
                     new.append(r.recording_id)
                     job.update(new=len(new), recording=r.recording_id)
+                if r.status == "noise":
+                    job["noise"] = job.get("noise", 0) + 1
                 if r.status == "failed":
                     job["error"] = r.error
-                if delete and r.status in ("new", "known"):
+                if delete and r.status in ("new", "known", "noise"):
                     self._gadget_call(lambda rec, p=path: rec.delete(p))
                     dest.unlink(missing_ok=True)
                 job["progress"] = [i + 1, len(files)]

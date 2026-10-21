@@ -147,6 +147,37 @@ def test_delete_source_only_once_synced(tmp_path):
     assert [p.name for p in src.iterdir()] == ["20261016T101500.wav"]  # the failed one stays
 
 
+class NoiseTranscriber(FakeTranscriber):
+    """Speech in files named *talk*; what Whisper makes of noise in the others."""
+
+    def transcribe(self, path):
+        self.calls.append(path)
+        if "talk" in path.name:
+            return Transcript("en", 1.0, [Segment(0, 1, "hello", avg_logprob=-0.3)])
+        made_up = Segment(0, 1, " Thank you.", avg_logprob=-1.4, no_speech_prob=0.7)
+        return Transcript("en", 1.0, [made_up] if "thanks" in path.name else [])
+
+
+def test_noise_only_files_are_dropped(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    for i, name in enumerate(["091500talk.wav", "091600.wav", "091700thanks.wav"]):
+        write_wav(src / name, freq=200 + 50 * i)
+    fake = NoiseTranscriber()
+    with Store(tmp_path / "t.db") as store:
+        syncer = Syncer(
+            store, Pipeline(fake, store), tmp_path / "lib", compress=False, drop_noise=True
+        )
+        assert [r.status for r in syncer.sync(FolderSource(src))] == ["new", "noise", "noise"]
+        assert [r.name for r in store.recordings()] == ["091500talk.wav"]
+        assert [p.name for p in (tmp_path / "lib").rglob("*.wav")] == ["091500talk.wav"]
+        # remembered: not transcribed again, and deleted from the source when asked
+        syncer.delete_source = True
+        assert [r.status for r in syncer.sync(FolderSource(src))] == ["known", "noise", "noise"]
+        assert len(fake.calls) == 3
+    assert [p.name for p in src.iterdir()] == []
+
+
 def test_process_source_keeps_going_after_a_failure(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
