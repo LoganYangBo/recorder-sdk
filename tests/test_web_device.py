@@ -95,12 +95,13 @@ def test_live_transcription(setup):
         fake.cb[ble.LIVE](None, bytearray(data))
     for _ in range(100):
         r = jcall(base, "/api/device/live?from=0")
-        if r["committed"]:
+        if r["partial"]:
             break
         time.sleep(0.05)
-    assert r["on"] and r["committed"][0]["text"] == "live 0"
+    assert r["on"] and r["partial"].startswith("live 0")  # no pause yet: still partial
     assert r["duration"] == pytest.approx(len(pcm) // block * block / SR, abs=0.1)
     stop = jcall(base, "/api/device/live/stop", "POST", {})
+    assert stop["committed"][0]["text"] == "live 0"
     assert stop["recording"] is None  # the card has the same audio
     assert jcall(base, "/api/recordings") == []
     assert "S0" in fake.sent and not jcall(base, "/api/device")["live"]

@@ -247,7 +247,8 @@ def test_import_rejects_non_audio(server):
 
 def test_live_session_over_http(server, tmp_path):
     sid = jcall(server, "/api/live/start", "POST", {"threshold": 0.3})["id"]
-    audio = np.concatenate([tone(200, 2), tone(200, 2), tone(800, 2)])
+    # a pause after the first 2 s: that phrase is committed while the rest is still coming
+    audio = np.concatenate([tone(200, 2), np.zeros(SR, np.float32), tone(200, 2), tone(800, 2)])
     committed = []
     for i in range(0, len(audio), SR):
         req = urllib.request.Request(
@@ -257,14 +258,15 @@ def test_live_session_over_http(server, tmp_path):
         )
         with urllib.request.urlopen(req) as r:
             committed += json.loads(r.read())["committed"]
-    # the fake numbers segments within the re-transcribed tail, so compare times
-    assert [(c["n"], c["start"]) for c in committed] == [(1, 0.0), (2, 2.0)]
+    # the fake numbers segments within each piece, so compare times
+    assert [(c["n"], c["start"]) for c in committed] == [(1, 0.0)]
     stop = jcall(server, f"/api/live/{sid}/stop", "POST", {})
-    assert [(c["n"], c["start"]) for c in stop["committed"]] == [(3, 4.0)]
+    assert [c["n"] for c in stop["committed"]] == [2, 3]
+    assert [c["start"] for c in stop["committed"]] == pytest.approx([2.28, 4.28])
     rec = [r for r in jcall(server, "/api/recordings") if r["id"] == stop["recording"]][0]
-    assert rec["file"].startswith("live-") and rec["duration"] == 6.0
+    assert rec["file"].startswith("live-") and rec["duration"] == 7.0
     segs = jcall(server, f"/api/recordings/{stop['recording']}/segments")
-    assert [s["start"] for s in segs] == [0.0, 2.0, 4.0]
+    assert [s["start"] for s in segs] == pytest.approx([0.0, 2.28, 4.28])
     assert all(s["speaker"] for s in segs)
 
 
