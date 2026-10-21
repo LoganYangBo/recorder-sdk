@@ -8,7 +8,7 @@
 // resumes listening. Wiring (see firmware/README.md): SD on SPI (D8 SCK, D9 MISO, D10 MOSI,
 // CS on D2), button between D1 and GND, optional 128x32 SSD1306 OLED on I2C (D4 SDA, D5 SCL).
 //
-// The OLED (when the Adafruit SSD1306 library is installed and a screen is connected) stays
+// The OLED (when connected; USE_SCREEN below needs the Adafruit SSD1306 library) stays
 // dark and lights for 5 s at power-on and when the button is pressed; a press while it is lit
 // pauses or resumes. Without a screen, every press pauses or resumes.
 //
@@ -31,7 +31,10 @@
 #include <bluefruit.h>
 #include <time.h>
 #include "adpcm.h"
-#if __has_include(<Adafruit_SSD1306.h>)
+// The OLED needs the Adafruit SSD1306 library (Library Manager). Without it, set this to 0.
+// (A screen that isn't connected is fine either way: it's looked for at power-on.)
+#define USE_SCREEN 1
+#if USE_SCREEN
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
 #define HAVE_SCREEN_LIB 1

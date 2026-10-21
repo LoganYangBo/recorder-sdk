@@ -58,8 +58,9 @@ With the OLED connected (and the **Adafruit SSD1306** library installed from the
 Manager, with the libraries it asks for), the screen lights for 5 seconds at power-on and when
 the button is pressed: the state (`REC 1:23`, `LISTEN`, `PAUSED`, `NO CARD`), battery,
 Bluetooth and clock. With a screen the first press only lights it; pressing again while it's lit
-pauses or resumes. Dark, it draws almost nothing. Without the library or the screen the
-firmware works as before.
+pauses or resumes. Dark, it draws almost nothing. Without a screen the
+firmware works as before (without the library, set `USE_SCREEN` to 0 at the top of
+`recorder.ino`).
 
 Files are 16 kHz mono IMA ADPCM WAV, 4:1 compressed (about 29 MB per hour of sound). The header
 is rewritten every 30 seconds, so a power cut loses at most the last 30 seconds.
