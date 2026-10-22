@@ -93,13 +93,14 @@ def test_live_transcription(setup):
         x = pcm[i : i + block]
         data = x[0].astype("<i2").tobytes() + bytes([0, i // block % 256]) + bytes(236)
         fake.cb[ble.LIVE](None, bytearray(data))
-    for _ in range(100):
+    fed = len(pcm) // block * block / SR
+    for _ in range(100):  # the audio is handled in the background: wait for all of it
         r = jcall(base, "/api/device/live?from=0")
-        if r["partial"]:
+        if r["partial"] and r["duration"] >= fed - 0.1:
             break
         time.sleep(0.05)
     assert r["on"] and r["partial"].startswith("live 0")  # no pause yet: still partial
-    assert r["duration"] == pytest.approx(len(pcm) // block * block / SR, abs=0.1)
+    assert r["duration"] == pytest.approx(fed, abs=0.1)
     stop = jcall(base, "/api/device/live/stop", "POST", {})
     assert stop["committed"][0]["text"] == "live 0"
     assert stop["recording"] is None  # the card has the same audio
