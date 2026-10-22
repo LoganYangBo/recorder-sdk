@@ -59,7 +59,7 @@ BATTERY = (40.6, 19.8)
 XIAO = (22.4, 17.8)
 SD = (27.6, 17.7)  # with the card in
 OLED = (38.3, 12.2)
-OLED_GLASS = (30.0, 11.5)  # the glass on the module's board
+OLED_GLASS = (26.4, 12.2)  # the glass on the module's board (measured)
 OLED_GLASS_FROM_END = 1.0  # glass edge from the board's end away from the pins (-x end)
 BUTTON = (6.2, 6.2, 5.0)  # 6 x 6 tact switch: body, height to the top of the plunger
 MAGNET = (8.0, 1.0)  # thin disc magnets: diameter, thickness
@@ -80,7 +80,7 @@ CORNER = 3.5  # corner radius, seen from above
 TOP_EDGE = 0.6  # rounding of the frame's top edge
 BOTTOM_EDGE = 1.5  # rounding of the edge against the phone (makes the slab look thinner)
 
-WINDOW = (27.0, 8.0)  # the screen window...
+WINDOW = (23.0, 6.5)  # the screen window: the lit area is about 22.4 x 5.6...
 BEZEL = 1.2  # ...and the shallow step around it
 # the button: "cap" is a separate key (print it in another colour) poking through the lid,
 # "pad" is a round pad cut free from the lid itself
