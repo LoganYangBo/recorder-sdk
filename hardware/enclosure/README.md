@@ -6,8 +6,8 @@ A thin card for the recorder that sticks to the back of a phone with MagSafe:
 ![preview](preview.png)
 
 `enclosure.py` builds it (`pip install build123d`, then `python enclosure.py`) and writes
-`base.stl`, `lid.stl` and `button.stl`. The part sizes at the top are measured; change any of them and run it
-again.
+`base.stl`, `lid.stl`, `button.stl` and print plates holding several of them. The part sizes at
+the top are measured; change any of them and run it again.
 
 ## Look
 
@@ -52,7 +52,9 @@ Everything lies side by side in one layer, each part in its own pocket, so nothi
 
 - PETG or PLA, 0.2 mm layers (0.1 mm for the lid makes the hinge, holes and snaps nicer), no
   supports.
-- Base flat on the bed; lid outside face down; button with its bar down.
+- The STLs already lie the way they print (lid face down, button on its bar), no supports.
+- Print plates with `SETS` (2) of each part: `plate-all.stl` is everything in one colour;
+  `plate-dark.stl` (bases and buttons) and `plate-light.stl` (lids) make a two-colour set.
 - Print the lid first and try it in the base: if the snaps are too tight or loose, change `SNAP`
   or `LID_FIT`.
 

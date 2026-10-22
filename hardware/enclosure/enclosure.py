@@ -35,6 +35,7 @@ from build123d import (
     BuildPart,
     BuildSketch,
     Circle,
+    Compound,
     Cylinder,
     Locations,
     Mode,
@@ -259,12 +260,42 @@ def lid():
     return p.part
 
 
+SETS = 2  # how many of each part go on the print plates
+PLATE_GAP = 6.0
+
+
+def lay_flat(part):
+    """Centred on the origin, sitting on z = 0."""
+    b = part.bounding_box()
+    return Pos(-b.center().X, -b.center().Y, -b.min.Z) * part
+
+
+def plate(parts):
+    """The parts in rows (one row per kind), spaced out for one print."""
+    placed, y = [], 0.0
+    for part in parts:
+        size = part.bounding_box().size
+        for i in range(SETS):
+            placed.append(
+                Pos((i - (SETS - 1) / 2) * (size.X + PLATE_GAP), y - size.Y / 2, 0) * part
+            )
+        y -= size.Y + PLATE_GAP
+    whole = Compound(placed)
+    b = whole.bounding_box()
+    return Pos(-b.center().X, -b.center().Y, 0) * whole
+
+
 if __name__ == "__main__":
     # each part lying the way it prints: the lid face down, the button key on its bar
-    parts = [("base", base()), ("lid", Rot(180, 0, 0) * lid())]
+    parts = {"base": lay_flat(base()), "lid": lay_flat(Rot(180, 0, 0) * lid())}
     if BUTTON_STYLE == "cap":
-        parts.append(("button", cap()))
-    for name, part in parts:
-        part = Pos(0, 0, -part.bounding_box().min.Z) * part
+        parts["button"] = lay_flat(cap())
+    plates = {
+        "plate-all": list(parts.values()),  # everything, one colour
+        "plate-dark": [p for n, p in parts.items() if n != "lid"],  # base and button...
+        "plate-light": [parts["lid"]],  # ...and lid in another colour
+    }
+    files = {**parts, **{name: plate(ps) for name, ps in plates.items()}}
+    for name, part in files.items():
         export_stl(part, str(HERE / f"{name}.stl"), tolerance=0.02, angular_tolerance=0.2)
     print(f"outer {OUTER[0]:.1f} x {OUTER[1]:.1f} x {THICKNESS:.1f} mm")
