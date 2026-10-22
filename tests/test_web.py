@@ -37,6 +37,8 @@ class FakeTranscriber:
             n = len(audio) // (2 * SR)
             segs = [Segment(2.0 * k, 2.0 * k + 2, f"live {k}") for k in range(n)]
             return Transcript("en", len(audio) / SR, segs)
+        if "silence" in str(audio):  # a file with no speech in it
+            return Transcript("en", 6, [], params=self.params)
         segs = [Segment(0, 2, "imported a"), Segment(2, 4, "imported b"), Segment(4, 6, "c")]
         return Transcript("en", 6, segs, params=self.params)
 
@@ -214,6 +216,28 @@ def test_import_transcribes_in_background(server, tmp_path):
     assert sorted(p.name for p in (tmp_path / "lib").iterdir()) == ["new talk.m4a"]
 
 
+def test_import_without_speech_is_dropped(server, tmp_path):
+    req = urllib.request.Request(
+        server + "/api/import?name=silence.m4a", data=b"quiet", method="POST"
+    )
+    urllib.request.urlopen(req).close()
+    (job,) = wait_jobs(server)
+    assert job["status"] == "noise" and job.get("recording") is None
+    assert not (tmp_path / "lib" / "silence.m4a").exists()
+    assert [r["file"] for r in jcall(server, "/api/recordings")] == ["talk.m4a"]
+
+
+def test_live_session_without_speech_is_not_saved(server):
+    sid = jcall(server, "/api/live/start", "POST", {})["id"]
+    req = urllib.request.Request(  # 1.5 s: the fake hears speech only in 2 s pieces
+        f"{server}/api/live/{sid}/audio", data=tone(200, 1.5).astype("<f4").tobytes(), method="POST"
+    )
+    urllib.request.urlopen(req).close()
+    stop = jcall(server, f"/api/live/{sid}/stop", "POST", {})
+    assert stop["recording"] is None and stop["reason"] == "empty"
+    assert len(jcall(server, "/api/recordings")) == 1
+
+
 def test_import_rejects_non_audio(server):
     req = urllib.request.Request(server + "/api/import?name=notes.txt", data=b"x", method="POST")
     with pytest.raises(urllib.error.HTTPError) as e:
@@ -223,7 +247,8 @@ def test_import_rejects_non_audio(server):
 
 def test_live_session_over_http(server, tmp_path):
     sid = jcall(server, "/api/live/start", "POST", {"threshold": 0.3})["id"]
-    audio = np.concatenate([tone(200, 2), tone(200, 2), tone(800, 2)])
+    # a pause after the first 2 s: that phrase is committed while the rest is still coming
+    audio = np.concatenate([tone(200, 2), np.zeros(SR, np.float32), tone(200, 2), tone(800, 2)])
     committed = []
     for i in range(0, len(audio), SR):
         req = urllib.request.Request(
@@ -233,14 +258,15 @@ def test_live_session_over_http(server, tmp_path):
         )
         with urllib.request.urlopen(req) as r:
             committed += json.loads(r.read())["committed"]
-    # the fake numbers segments within the re-transcribed tail, so compare times
-    assert [(c["n"], c["start"]) for c in committed] == [(1, 0.0), (2, 2.0)]
+    # the fake numbers segments within each piece, so compare times
+    assert [(c["n"], c["start"]) for c in committed] == [(1, 0.0)]
     stop = jcall(server, f"/api/live/{sid}/stop", "POST", {})
-    assert [(c["n"], c["start"]) for c in stop["committed"]] == [(3, 4.0)]
+    assert [c["n"] for c in stop["committed"]] == [2, 3]
+    assert [c["start"] for c in stop["committed"]] == pytest.approx([2.28, 4.28])
     rec = [r for r in jcall(server, "/api/recordings") if r["id"] == stop["recording"]][0]
-    assert rec["file"].startswith("live-") and rec["duration"] == 6.0
+    assert rec["file"].startswith("live-") and rec["duration"] == 7.0
     segs = jcall(server, f"/api/recordings/{stop['recording']}/segments")
-    assert [s["start"] for s in segs] == [0.0, 2.0, 4.0]
+    assert [s["start"] for s in segs] == pytest.approx([0.0, 2.28, 4.28])
     assert all(s["speaker"] for s in segs)
 
 
@@ -294,6 +320,16 @@ def test_delete_recording(server, tmp_path):
     with pytest.raises(urllib.error.HTTPError) as e:
         call(server, "/api/recordings/1", "DELETE")
     assert e.value.code == 404
+
+
+def test_delete_many(server, tmp_path):
+    req = urllib.request.Request(server + "/api/import?name=a.m4a", data=b"abc", method="POST")
+    urllib.request.urlopen(req).read()
+    (job,) = wait_jobs(server)
+    r = jcall(server, "/api/recordings/delete", "POST", {"ids": [1, job["recording"], 99]})
+    assert r == {"deleted": 2, "kept_files": [str(tmp_path / "talk.m4a")]}  # 99: not there
+    assert jcall(server, "/api/recordings") == []
+    assert (tmp_path / "talk.m4a").exists() and not (tmp_path / "lib" / "a.m4a").exists()
 
 
 def test_unsure_word_candidates_and_correction(server, tmp_path):

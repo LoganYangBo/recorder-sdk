@@ -93,17 +93,22 @@ class WhisperTranscriber:
             )
         return self._model
 
-    def transcribe(self, path: str | Path | np.ndarray) -> Transcript:
-        """Transcribe an audio file, or 16 kHz mono float32 samples."""
+    def transcribe(
+        self, path: str | Path | np.ndarray, language: str | None = None, prompt: str | None = None
+    ) -> Transcript:
+        """Transcribe an audio file, or 16 kHz mono float32 samples. `language` and `prompt`
+        (text heard just before, for context) override the transcriber's own for this call."""
         model = self._load()
         audio = path if hasattr(path, "dtype") else str(path)
+        if prompt and self.initial_prompt:
+            prompt = f"{self.initial_prompt} {prompt}"
         segments, info = model.transcribe(
             audio,
-            language=self.language,
+            language=language or self.language,
             vad_filter=self.vad_filter,
             beam_size=self.beam_size,
             word_timestamps=self.word_timestamps,
-            initial_prompt=self.initial_prompt,
+            initial_prompt=prompt or self.initial_prompt,
             hotwords=self.hotwords,
         )
         # segments is a generator; transcription actually runs here

@@ -6,8 +6,9 @@
 A Python SDK that turns hours of everyday audio into a searchable, speaker-labelled transcript
 database, plus a local web UI and an API for apps built on top of it.
 
-It is the software half of an all-day wearable recorder (XIAO nRF52840 Sense + microSD). It works
-on any audio file today, such as phone recordings.
+It is built for an all-day wearable recorder (XIAO nRF52840 Sense + microSD), whose firmware and
+enclosure are here too ([The recorder](#the-recorder)). It works on any audio file as well, such
+as phone recordings.
 
 ```
 device / folder ──► sync ──► faster-whisper ──► speaker labels ──► word alignment ──► SQLite
@@ -21,6 +22,7 @@ device / folder ──► sync ──► faster-whisper ──► speaker labels
 - [Features](#features)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [The recorder](#the-recorder)
 - [Syncing the recorder](#syncing-the-recorder)
 - [Speaker identification](#speaker-identification)
 - [Web UI](#web-ui)
@@ -36,8 +38,9 @@ device / folder ──► sync ──► faster-whisper ──► speaker labels
   per-word timestamps and confidence, initial prompts and hotwords, on GPU or CPU.
 - **Speaker labels** from voiceprints (SpeechBrain ECAPA): each segment is `me`, an enrolled
   person, or `other`.
-- **Device sync** over USB. Files are deduplicated by content hash, compressed to Ogg Opus (about
-  8x smaller than WAV) and processed one at a time. A file that fails is logged and retried
+- **Device sync** over USB or Bluetooth, plus live transcription over Bluetooth. Files are
+  deduplicated by content hash, compressed to Ogg Opus (about 8x smaller than WAV) and processed
+  one at a time. A file that fails is logged and retried
   without blocking the rest.
 - **Wall-clock time** for every recording, taken from file names or metadata, so you can ask
   "what did I say on Tuesday afternoon".
@@ -97,6 +100,25 @@ recorder ui                           # http://127.0.0.1:8765
 
 `recorder --db PATH COMMAND` picks the database (default `recorder.db`).
 
+## The recorder
+
+![The recorder's enclosure](hardware/enclosure/preview.png)
+
+A thin card (73 × 43 × 7.3 mm) that sticks to the back of a phone with MagSafe and records
+whatever is said around you all day.
+
+- **Parts**: Seeed XIAO nRF52840 Sense (mic, Bluetooth, charging), a microSD module, a 6 × 6 mm
+  button, a 500 mAh LiPo (602040) and an optional 0.91" OLED.
+- **Firmware** ([`firmware/`](firmware/README.md)): listens all day and records whenever there
+  is sound, to the card as IMA ADPCM WAV. One button: press to pause or resume, hold to sleep.
+  The OLED shows the time, battery, Bluetooth and recording state, and a live sound wave.
+  Bluetooth syncs the clock and the files and streams live audio.
+- **Enclosure** ([`hardware/enclosure/`](hardware/enclosure/README.md)): a parametric
+  [build123d](https://github.com/gumyr/build123d) script that writes printable STLs. Every part
+  sits in its own pocket, the lid clicks in, and four 8 × 1 mm magnets sit on the MagSafe ring,
+  so nothing needs glue. The parts are wired with thin soldered wires (the case is too thin for
+  connectors).
+
 ## Syncing the recorder
 
 ```bash
@@ -105,7 +127,18 @@ recorder sync --watch         # wait for it, and sync every time it is plugged i
 recorder sync D:\phone-recs   # or any folder
 recorder sync --delete        # free the device's card once files are safely synced
 recorder status               # what was synced, and what failed
+
+recorder sync --ble --watch --delete   # over Bluetooth: every 10 minutes when it's in range
+recorder live                 # transcribe what the recorder hears, live, over Bluetooth
+recorder device               # its state, battery and recordings waiting, over Bluetooth
 ```
+
+The web UI (`recorder ui`) has the same on its **Recorder** page: connect, see the battery,
+state, clock and recordings waiting, sync with one click, and watch live transcription.
+
+Over Bluetooth (the `device` extra, which installs bleak) a sync sets the recorder's clock,
+downloads the finished recordings to `inbox/` next to the database (resuming an interrupted
+download), and imports them like any other source; `--delete` then removes them from the card.
 
 ### Device convention
 
@@ -117,9 +150,10 @@ The recorder mounts as a USB drive:
 <drive>/REC/20261016/091500.wav    the same, for firmware limited to 8.3 names
 ```
 
-The firmware in [`firmware/`](firmware/README.md) writes the second form. The device has no
-battery-backed clock: `recorder settime` sets it over USB serial, and `recorder sync --watch`
-does so whenever the device is plugged in (both need the `device` extra).
+The firmware in [`firmware/`](firmware/README.md) writes the second form, as IMA ADPCM WAV
+(4:1), which PyAV decodes like any WAV. The device has no battery-backed clock: every Bluetooth
+connection sets it, `recorder settime` sets it over USB serial, and `recorder sync --watch`
+does so whenever the device is plugged in (all need the `device` extra).
 
 `find_devices()` looks for the marker on Windows drive letters and under `/media`, `/run/media`,
 `/mnt` and `/Volumes`. Other timestamp formats work too (`20261016_091500`,
@@ -175,9 +209,9 @@ one job at a time in a background queue, which the page lists under Background j
 - **Browse and play.** Recordings are grouped by day with their start times. Click a time or a
   word to play from there. Switch between segments and merged speaker turns, and search.
 - **Import.** Click Import or drag files onto the page. Files are copied into the library and
-  transcribed in the background.
+  transcribed in the background. A file in which Whisper hears no speech is not kept.
 - **Record live.** Transcribes the microphone as you talk and saves a normal recording when you
-  stop.
+  stop (unless no speech was heard).
 - **Manage.** Rename a recording, set its start time, or delete it (the audio file goes too if it
   is in the library).
 - **Speakers.** Lists and deletes voiceprints and tunes the threshold. Tick segments in a
@@ -244,14 +278,16 @@ with Store("recorder.db") as store:
 |-----------|--------|-----------------|
 | `Transcriber` | `transcribe.py` | `WhisperTranscriber` |
 | `SpeakerLabeler` | `speaker.py` | `VoiceprintLabeler` (takes any `Embedder`, e.g. `EcapaEmbedder`), `NoopLabeler` |
-| `AudioSource` | `sync.py` | `FolderSource`, `DeviceSource`; BLE or serial transfer would be another |
+| `AudioSource` | `sync.py` | `FolderSource`, `DeviceSource` (Bluetooth sync downloads into a folder first) |
 
 ## CLI reference
 
 | Command | Purpose |
 |---------|---------|
 | `transcribe PATH...` | Transcribe files or folders. `--model`, `--device`, `--compute-type`, `--language`, `--prompt`, `--hotwords`, `--reprocess`, `--no-suggest` |
-| `sync [SOURCE]` | Sync the device or a folder. `--watch`, `--interval`, `--library`, `--delete`, `--keep-wav`, `--retry` |
+| `sync [SOURCE]` | Sync the device or a folder. `--ble`, `--watch`, `--interval`, `--library`, `--delete`, `--keep-wav`, `--retry` |
+| `live` | Live transcription from the recorder over Bluetooth. `--save` keeps it as a recording |
+| `device` | The recorder's state, battery and files, over Bluetooth |
 | `settime` | Set the recorder's clock over USB |
 | `status` | Synced and failed files |
 | `dates [--force]` | Fill in start times from file names or metadata |
@@ -289,6 +325,8 @@ can tell which recordings are worth re-running after a change.
 | `api.py` | `Recorder`: the read API for apps |
 | `sync.py` | Audio sources and start-time detection |
 | `clock.py` | Setting the recorder's clock over USB serial |
+| `ble.py` | The recorder over Bluetooth: clock, file download, live audio |
+| `adpcm.py` | Decoding the recorder's IMA ADPCM audio |
 | `ingest.py` | `Syncer`: copy, compress, process and track each file |
 | `pipeline.py` | Transcribe, label, store one file |
 | `transcribe.py` | faster-whisper wrapper; alternative decodes for unsure words |

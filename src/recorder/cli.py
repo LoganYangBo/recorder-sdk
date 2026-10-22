@@ -25,6 +25,9 @@ def _voiceprint_labeler(store: Store, args):
         raise SystemExit(str(e)) from e
 
 
+BLE_EVERY = 600  # seconds between Bluetooth syncs with --watch
+
+
 def _parse_indices(text: str) -> list[int]:
     """'4,7,10-12' -> [4, 7, 10, 11, 12]"""
     out = []
@@ -169,6 +172,143 @@ def cmd_settime(args) -> None:
         print(f"{port}: clock set to {stamp}")
 
 
+def _ble(args, work):
+    """Connect to the nearby recorder, set its clock, and run `work(recorder)`; None if
+    no recorder is in range."""
+    import asyncio
+
+    try:
+        from .ble import BleRecorder, RecorderError, find_recorder, import_bleak
+
+        BleakClient = import_bleak().BleakClient
+    except ImportError:
+        raise SystemExit('needs bleak: pip install "recorder[device]"')
+
+    async def main():
+        dev = await find_recorder()
+        if dev is None:
+            return None
+        async with BleakClient(dev) as client:
+            rec = BleRecorder(client)
+            await rec.start()
+            print(f"recorder clock set to {await rec.set_clock()}")
+            return await work(rec)
+
+    try:
+        return asyncio.run(main())
+    except (RecorderError, OSError) as e:
+        print(f"bluetooth: {e}")
+        return None
+
+
+def _battery(status: dict) -> str:
+    return f"battery {status.get('pct', '?')}% ({status.get('bat', '?')} V)"
+
+
+def cmd_device(args) -> None:
+    async def work(rec):
+        status = await rec.status()
+        files = await rec.list_files()
+        return status, files
+
+    found = _ble(args, work)
+    if found is None:
+        raise SystemExit("no recorder in range: switch it on and bring it close")
+    status, files = found
+    print(f"{status.get('state', '?')}, {_battery(status)}")
+    size = sum(n for _, n in files)
+    print(f"{len(files)} recording(s) on the card, {size / 1e6:.1f} MB")
+
+
+def _sync_ble(args, run, store) -> bool:
+    """One Bluetooth sync: download new recordings to inbox/ by the db, import them, and
+    with --delete remove them from the card. False if no recorder is in range."""
+    from .ble import download_new
+
+    inbox = Path(args.db).resolve().parent / "inbox"
+
+    async def fetch(rec):
+        print(_battery(await rec.status()))
+        return await download_new(rec, inbox, print)
+
+    files = _ble(args, fetch)
+    if files is None:
+        return False
+    results = run(_Files([local for _, local in files]), store) if files else []
+    done = {r.path for r in results if r.status in ("new", "known", "noise")}
+    gone = [(card, local) for card, local in files if local in done]
+    if args.delete and gone:
+
+        async def delete(rec):
+            for card, local in gone:
+                await rec.delete(card)
+                local.unlink(missing_ok=True)
+            return len(gone)
+
+        n = _ble(args, delete)
+        if n:
+            print(f"deleted {n} synced recording(s) from the card")
+    return True
+
+
+def cmd_live(args) -> None:
+    import queue
+    import threading
+
+    import numpy as np
+
+    from .live import LiveSession
+
+    transcriber = _transcriber(args)
+    with Store(args.db) as store:
+        labeler = None if args.no_speakers else _voiceprint_labeler(store, args)
+        session = LiveSession(transcriber, labeler)
+        chunks: queue.Queue = queue.Queue()
+
+        def show(segments):
+            for seg in segments:
+                who = f"[{seg.speaker}] " if seg.speaker else ""
+                print(f"{_fmt(seg.start)}  {who}{seg.text}", flush=True)
+
+        def transcribe():
+            stop = False
+            while not stop:
+                parts = [chunks.get()]  # wait for audio, then take all that's queued
+                while not chunks.empty():
+                    parts.append(chunks.get_nowait())
+                stop = parts[-1] is None
+                audio = [p for p in parts if p is not None]
+                if audio:
+                    show(session.feed(np.concatenate(audio).astype(np.float32) / 32768))
+
+        worker = threading.Thread(target=transcribe, daemon=True)
+        worker.start()
+
+        async def stream(rec):
+            import asyncio
+
+            print(_battery(await rec.status()))
+            await rec.live(chunks.put)
+            print("listening (Ctrl+C to stop)...", flush=True)
+            while rec.client.is_connected:
+                await asyncio.sleep(0.5)
+            print("recorder disconnected")
+            return True
+
+        try:
+            if _ble(args, stream) is None:
+                raise SystemExit("no recorder in range: switch it on and bring it close")
+        except KeyboardInterrupt:
+            pass
+        chunks.put(None)
+        worker.join()
+        show(session.finish())
+        if args.save and session.duration > 1:
+            library = Path(args.db).resolve().parent / "recordings"
+            rid = session.save(store, library, {"model": args.model, "source": "ble"})
+            print(f"saved as recording {rid}")
+
+
 def cmd_sync(args) -> None:
     import time
 
@@ -188,6 +328,7 @@ def cmd_sync(args) -> None:
             library,
             compress=not args.keep_wav,
             delete_source=args.delete,
+            drop_noise=args.ble,
             after=None
             if args.no_suggest
             else lambda rid: _suggest(store, transcriber, rid, aligner()),
@@ -199,6 +340,21 @@ def cmd_sync(args) -> None:
             counts[r.status] = counts.get(r.status, 0) + 1
         print(f"{getattr(source, 'root', '')}: " + ", ".join(f"{n} {k}" for k, n in counts.items()))
         return results
+
+    if args.ble:
+        with Store(args.db) as store:
+            if not args.watch:
+                if not _sync_ble(args, run, store):
+                    raise SystemExit("no recorder in range: switch it on and bring it close")
+                return
+            print("looking for the recorder over Bluetooth (Ctrl+C to stop)...")
+            try:
+                while True:
+                    synced = _sync_ble(args, run, store)
+                    time.sleep(BLE_EVERY if synced else args.interval)
+            except KeyboardInterrupt:
+                pass
+        return
 
     clocks = _ClockSetter()
     clocks.check()
@@ -442,6 +598,7 @@ def main(argv: list[str] | None = None) -> None:
         help="copy recordings from the recorder (or a folder) into the library and transcribe",
     )
     sy.add_argument("source", nargs="?", help="a folder; default: the plugged-in recorder")
+    sy.add_argument("--ble", action="store_true", help="over Bluetooth instead of USB/card")
     sy.add_argument("--watch", action="store_true", help="keep waiting for the recorder")
     sy.add_argument("--interval", type=float, default=5, help="seconds between checks (--watch)")
     sy.add_argument(
@@ -462,6 +619,21 @@ def main(argv: list[str] | None = None) -> None:
     sy.add_argument("--no-suggest", action="store_true")
     sy.add_argument("--threshold", type=float, default=0.3, help="min voiceprint similarity")
     sy.set_defaults(func=cmd_sync)
+
+    lv = sub.add_parser("live", help="transcribe the recorder live over Bluetooth")
+    lv.add_argument("--save", action="store_true", help="store the session as a recording")
+    lv.add_argument("--model", default="large-v3")
+    lv.add_argument("--device", default="auto", help="auto / cuda / cpu")
+    lv.add_argument("--compute-type", default="default")
+    lv.add_argument("--language", default=None)
+    lv.add_argument("--prompt", default=None)
+    lv.add_argument("--hotwords", default=None)
+    lv.add_argument("--no-speakers", action="store_true")
+    lv.add_argument("--threshold", type=float, default=0.3, help="min voiceprint similarity")
+    lv.set_defaults(func=cmd_live)
+
+    dv = sub.add_parser("device", help="the recorder's state, battery and files (Bluetooth)")
+    dv.set_defaults(func=cmd_device)
 
     tm = sub.add_parser("settime", help="set the recorder's clock over USB (needs pyserial)")
     tm.set_defaults(func=cmd_settime)

@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import ops
+from .ingest import has_speech
 from .live import LiveSession
 from .pipeline import Pipeline
 from .store import Store
@@ -142,6 +143,7 @@ class App:
         whisper: dict | None = None,
         pronouncer=fetch_pronunciation,
         aligner=None,
+        link=None,
     ):
         self.db = str(db)
         # forced aligner for precise word times: an object, "auto" (load on first use), or None
@@ -162,6 +164,10 @@ class App:
         self._worker: threading.Thread | None = None
         self.live: dict[int, LiveSession] = {}
         self._live_ids = itertools.count(1)
+        # the recorder over Bluetooth (ble.BleLink, made on first use) and what it last said
+        self._link = link
+        self.gadget = {"status": None, "files": None, "error": None}
+        self.gadget_live: dict | None = None  # {"session", "queue", "level", "segs"} while on
 
     def store(self) -> Store:
         return Store(self.db)
@@ -322,7 +328,7 @@ class App:
 
     def delete(self, q, body, rid: int):
         """Delete a recording. Its audio file is deleted too when it lives in the
-        library folder (imports and live recordings); files elsewhere are kept.
+        library folder (imports, live recordings, synced files); files elsewhere are kept.
         """
         with self.store() as store:
             rec = store.recording(rid)
@@ -336,6 +342,19 @@ class App:
             path.unlink()
             deleted_file = True
         return {"ok": True, "deleted_file": deleted_file, "path": rec.path}
+
+    def delete_many(self, q, body):
+        """Delete several recordings (body: {"ids": [...]}), each as `delete` does."""
+        deleted, kept = 0, []
+        for rid in body.get("ids", []):
+            try:
+                r = self.delete(q, {}, int(rid))
+            except ApiError:  # already gone
+                continue
+            deleted += 1
+            if not r["deleted_file"]:
+                kept.append(r["path"])
+        return {"deleted": deleted, "kept_files": kept}
 
     # ---- import: upload into the library, transcribe in the background ----
 
@@ -390,8 +409,16 @@ class App:
             if r.skipped:  # same audio was imported before: drop the copy
                 path.unlink(missing_ok=True)
                 job["name"] = store.recording(r.recording_id).name
-        job.update(result="duplicate" if r.skipped else "done", recording=r.recording_id)
-        if not r.skipped:
+                result = "duplicate"
+            elif not has_speech(store.segments(r.recording_id)):  # no speech: drop it
+                store.delete(r.recording_id)
+                path.unlink(missing_ok=True)
+                job.update(result="noise")
+                return
+            else:
+                result = "done"
+        job.update(result=result, recording=r.recording_id)
+        if result == "done":
             self.suggest(r.recording_id)
 
     def suggest(self, rid: int) -> dict | None:
@@ -462,13 +489,218 @@ class App:
             session.finish()
         del self.live[sid]
         committed = [_seg_json(before + i + 1, s) for i, s in enumerate(session.committed[before:])]
-        if session.duration < 1:
-            return {"recording": None, "committed": committed}
+        if session.duration < 1 or not has_speech(session.committed):  # nothing worth keeping
+            reason = "short" if session.duration < 1 else "empty"
+            return {"recording": None, "committed": committed, "reason": reason}
         with self.store() as store:
             params = getattr(self.transcriber(), "params", {})
             rid = session.save(store, self.library, params)
         self.suggest(rid)
         return {"recording": rid, "committed": committed}
+
+    # ---- the recorder over Bluetooth ----
+
+    def link(self):
+        if self._link is None:
+            try:
+                from .ble import BleLink, import_bleak
+
+                import_bleak()
+            except ImportError as e:
+                raise ApiError(400, 'needs bleak: pip install "recorder[device]"') from e
+            self._link = BleLink()
+        return self._link
+
+    def _gadget_call(self, work, wait: bool = True):
+        from .ble import RecorderError
+
+        try:
+            return self.link().call(work, wait)
+        except (RecorderError, OSError) as e:
+            self.gadget["error"] = str(e)
+            raise ApiError(400, str(e)) from e
+
+    def _refresh_files(self) -> None:
+        files = self._gadget_call(lambda rec: rec.list_files())
+        self.gadget["files"] = {"count": len(files), "bytes": sum(n for _, n in files)}
+
+    def gadget_state(self, q, body):
+        g = self.gadget
+        connected = self._link is not None and self._link.connected
+        if connected:
+            try:
+                status = self._gadget_call(lambda rec: rec.status(), wait=False)
+                if status is not None:  # None: busy with a transfer, keep the last one
+                    g["status"] = status
+            except ApiError:
+                pass
+        live = self.gadget_live
+        return {
+            "connected": connected,
+            "status": g["status"] if connected else None,
+            "files": g["files"] if connected else None,
+            "error": g["error"],
+            "live": live is not None,
+            "mtu": getattr(self._link.client, "mtu_size", None) if connected else None,
+        }
+
+    def gadget_connect(self, q, body):
+        from .ble import RecorderError
+
+        self.gadget["error"] = None
+        try:
+            clock = self.link().connect()
+        except (RecorderError, OSError, TimeoutError) as e:
+            self.gadget["error"] = str(e) or type(e).__name__
+            raise ApiError(400, self.gadget["error"]) from e
+        self._refresh_files()
+        return {"clock": clock, **self.gadget_state(q, body)}
+
+    def gadget_disconnect(self, q, body):
+        if self.gadget_live:
+            self.gadget_live_stop(q, {})
+        if self._link is not None:
+            self._link.disconnect()
+        return self.gadget_state(q, body)
+
+    def gadget_sync(self, q, body):
+        delete = bool(body.get("delete"))
+        threshold = float(body.get("threshold", 0.3))
+        self.link()
+        for job in self.jobs.values():  # one sync at a time: a second click joins the first
+            if job["kind"] == "device" and job["status"] in ("queued", "running"):
+                return job
+        return self._enqueue("device", "Recorder", lambda job: self._sync(job, delete, threshold))
+
+    def _sync(self, job: dict, delete: bool, threshold: float) -> None:
+        """Download each recording, then import it before the next one, so results come in
+        as they go; the job shows the file count, bytes and download speed."""
+        import time
+
+        from .ingest import Syncer
+        from .sync import AudioFile, started_at_of
+
+        inbox = Path(self.db).resolve().parent / "inbox"
+        files = self._gadget_call(lambda rec: rec.list_files())
+        total = sum(n for _, n in files)
+        job.update(progress=[0, len(files)], bytes=[0, total], rate=None)
+        done_bytes = fetched = 0
+        started = time.monotonic()
+        new = []
+        syncer = None  # the models load when the first file is in, not before
+        with self.store() as store:
+            for i, (path, size) in enumerate(files):
+                job["stage"] = "downloading"
+                dest = inbox / path
+                if not (dest.is_file() and dest.stat().st_size == size):
+                    base, before = done_bytes, fetched
+
+                    def progress(got, base=base, before=before):
+                        job["bytes"] = [base + got, total]
+                        job["rate"] = (before + got) / max(time.monotonic() - started, 0.1)
+
+                    self._gadget_call(
+                        lambda rec, p=path, n=size, d=dest: rec.fetch(p, n, d, progress)
+                    )
+                    fetched += size
+                done_bytes += size
+                job["bytes"] = [done_bytes, total]
+                job["stage"] = "transcribing"
+                with self.model_lock:
+                    if syncer is None:
+                        labeler = self._labeler(store, threshold)
+                        pipeline = Pipeline(self.transcriber(), store, labeler)
+                        syncer = Syncer(store, pipeline, self.library, drop_noise=True)
+                    r = syncer.sync_file(AudioFile(dest, started_at_of(dest)))
+                if r.status == "new":
+                    new.append(r.recording_id)
+                    job.update(new=len(new), recording=r.recording_id)
+                if r.status == "noise":
+                    job["noise"] = job.get("noise", 0) + 1
+                if r.status == "failed":
+                    job["error"] = r.error
+                if delete and r.status in ("new", "known", "noise"):
+                    self._gadget_call(lambda rec, p=path: rec.delete(p))
+                    dest.unlink(missing_ok=True)
+                job["progress"] = [i + 1, len(files)]
+        job.update(new=len(new), stage=None)
+        self._refresh_files()
+        for rid in new:
+            self.suggest(rid)
+
+    def gadget_live_start(self, q, body):
+        import numpy as np
+
+        if self.gadget_live:
+            return {"ok": True}
+        threshold = float(body.get("threshold", 0.3))
+        with self.store() as store:
+            labeler = self._labeler(store, threshold)
+        live = {
+            "session": LiveSession(self.transcriber(), labeler),
+            "queue": queue.Queue(),
+            "level": 0.0,
+        }
+
+        def on_audio(samples):  # on the Bluetooth thread: keep it quick
+            x = samples.astype(np.float32) / 32768
+            live["level"] = float(np.sqrt(np.mean(x * x))) if len(x) else 0.0
+            live["queue"].put(x)
+
+        def feed():
+            session, chunks = live["session"], live["queue"]
+            while (c := chunks.get()) is not None:
+                parts = [c]
+                while not chunks.empty() and (c := chunks.get_nowait()) is not None:
+                    parts.append(c)
+                with self.model_lock:
+                    session.feed(np.concatenate(parts))
+                if c is None:
+                    break
+
+        live["thread"] = threading.Thread(target=feed, daemon=True)
+        live["thread"].start()
+        self.gadget_live = live
+        try:
+            self._gadget_call(lambda rec: rec.live(on_audio))
+        except ApiError:
+            self.gadget_live = None
+            live["queue"].put(None)
+            raise
+        return {"ok": True}
+
+    def gadget_live_poll(self, q, body):
+        live = self.gadget_live
+        if live is None:
+            return {"on": False, "committed": [], "partial": "", "duration": 0, "level": 0}
+        session = live["session"]
+        start = int(q.get("from", ["0"])[0])
+        segs, partial = session.committed[start:], session.partial  # no lock: feed holds it
+        return {
+            "on": True,
+            "committed": [_seg_json(start + i + 1, s) for i, s in enumerate(segs)],
+            "partial": partial,
+            "duration": session.duration,
+            "level": live["level"],
+        }
+
+    def gadget_live_stop(self, q, body):
+        live, self.gadget_live = self.gadget_live, None
+        if live is None:
+            return {"recording": None, "committed": []}
+        try:
+            self._gadget_call(lambda rec: rec.live(None))
+        except ApiError:
+            pass  # gone already: the audio received is still transcribed
+        live["queue"].put(None)
+        live["thread"].join()
+        session = live["session"]
+        before = len(session.committed)
+        with self.model_lock:
+            session.finish()
+        committed = [_seg_json(before + i + 1, s) for i, s in enumerate(session.committed[before:])]
+        # not saved: the recorder puts the same audio on its card, which syncs in full
+        return {"recording": None, "committed": committed}
 
     # ---- unsure words: candidates, corrections, pronunciation ----
 
@@ -668,6 +900,7 @@ ROUTES = [  # (method, path, handler, raw body)
     ("POST", r"/api/recordings/(\d+)/rename", "rename"),
     ("POST", r"/api/recordings/(\d+)/started", "set_started"),
     ("DELETE", r"/api/recordings/(\d+)", "delete"),
+    ("POST", r"/api/recordings/delete", "delete_many"),
     ("POST", r"/api/import", "upload", True),
     ("GET", r"/api/jobs", "job_list"),
     ("POST", r"/api/live/start", "live_start"),
@@ -683,6 +916,13 @@ ROUTES = [  # (method, path, handler, raw body)
     ("POST", r"/api/words/(\d+)/correct", "word_correct"),
     ("GET", r"/api/compare", "word_compare"),
     ("GET", r"/api/corrections", "correction_list"),
+    ("GET", r"/api/device", "gadget_state"),
+    ("POST", r"/api/device/connect", "gadget_connect"),
+    ("POST", r"/api/device/disconnect", "gadget_disconnect"),
+    ("POST", r"/api/device/sync", "gadget_sync"),
+    ("POST", r"/api/device/live/start", "gadget_live_start"),
+    ("GET", r"/api/device/live", "gadget_live_poll"),
+    ("POST", r"/api/device/live/stop", "gadget_live_stop"),
 ]
 
 
@@ -807,8 +1047,13 @@ def serve(
     library: str | Path | None = None,
     whisper: dict | None = None,
 ) -> None:
+    import faulthandler
     from importlib.util import find_spec
 
+    try:  # a crash in a native library (GPU, Bluetooth) then prints where it was
+        faulthandler.enable()
+    except (OSError, ValueError, AttributeError):  # stderr isn't a real file (tests)
+        pass
     aligner = "auto" if find_spec("torchaudio") else None
     app = App(db, device=device, library=library, whisper=whisper, aligner=aligner)
     with Store(db) as store:  # create / migrate the database before the first request
