@@ -40,6 +40,7 @@ from build123d import (
     Mode,
     Plane,
     Pos,
+    Rot,
     RectangleRounded,
     SlotOverall,
     Text,
@@ -259,9 +260,11 @@ def lid():
 
 
 if __name__ == "__main__":
-    parts = [("base", base()), ("lid", lid())]
+    # each part lying the way it prints: the lid face down, the button key on its bar
+    parts = [("base", base()), ("lid", Rot(180, 0, 0) * lid())]
     if BUTTON_STYLE == "cap":
         parts.append(("button", cap()))
     for name, part in parts:
+        part = Pos(0, 0, -part.bounding_box().min.Z) * part
         export_stl(part, str(HERE / f"{name}.stl"), tolerance=0.02, angular_tolerance=0.2)
     print(f"outer {OUTER[0]:.1f} x {OUTER[1]:.1f} x {THICKNESS:.1f} mm")
