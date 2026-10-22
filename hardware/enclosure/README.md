@@ -50,9 +50,8 @@ Everything lies side by side in one layer, each part in its own pocket, so nothi
 
 ## Printing
 
-- PETG or PLA, 0.2 mm layers (0.1 mm for the lid makes the hinge, holes and snaps nicer), no
-  supports.
-- The STLs already lie the way they print (lid face down, button on its bar), no supports.
+- PETG or PLA, 0.2 mm layers (0.1 mm for the lid makes the holes and snaps nicer), no supports.
+- The STLs already lie the way they print (lid face down, button on its bar).
 - Print plates with `SETS` (2) of each part: `plate-all.stl` is everything in one colour;
   `plate-dark.stl` (bases and buttons) and `plate-light.stl` (lids) make a two-colour set.
 - Print the lid first and try it in the base: if the snaps are too tight or loose, change `SNAP`
@@ -62,8 +61,11 @@ Everything lies side by side in one layer, each part in its own pocket, so nothi
 
 1. Before putting each magnet in, hold it to the phone and mark the side that pulls. Put all
    four in with that side down. They are a press fit; a tiny drop of glue if one is loose.
-2. Parts into their pockets, OLED glass up, the XIAO's USB-C against its opening.
-3. Put the button key up through the lid's hole from below, then press the lid in.
+2. Solder the parts together with thin (30 AWG) wire, no headers: there is no room for
+   connectors. Test everything before closing it.
+3. Parts into their pockets: the OLED glass up with its pins toward the button (the window is
+   over the glass, 6.8 mm from the other end), the XIAO's USB-C against its opening.
+4. Put the button key up through the lid's hole from below, then press the lid in.
 
 Parts: 8 × 1 mm N52 disc magnets. Without MagSafe on the phone, a MagSafe ring sticker on the
 phone or its case.

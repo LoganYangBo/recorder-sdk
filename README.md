@@ -6,8 +6,9 @@
 A Python SDK that turns hours of everyday audio into a searchable, speaker-labelled transcript
 database, plus a local web UI and an API for apps built on top of it.
 
-It is the software half of an all-day wearable recorder (XIAO nRF52840 Sense + microSD). It works
-on any audio file today, such as phone recordings.
+It is built for an all-day wearable recorder (XIAO nRF52840 Sense + microSD), whose firmware and
+enclosure are here too ([The recorder](#the-recorder)). It works on any audio file as well, such
+as phone recordings.
 
 ```
 device / folder ──► sync ──► faster-whisper ──► speaker labels ──► word alignment ──► SQLite
@@ -21,6 +22,7 @@ device / folder ──► sync ──► faster-whisper ──► speaker labels
 - [Features](#features)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [The recorder](#the-recorder)
 - [Syncing the recorder](#syncing-the-recorder)
 - [Speaker identification](#speaker-identification)
 - [Web UI](#web-ui)
@@ -97,6 +99,25 @@ recorder ui                           # http://127.0.0.1:8765
 ```
 
 `recorder --db PATH COMMAND` picks the database (default `recorder.db`).
+
+## The recorder
+
+![The recorder's enclosure](hardware/enclosure/preview.png)
+
+A thin card (73 × 43 × 7.3 mm) that sticks to the back of a phone with MagSafe and records
+whatever is said around you all day.
+
+- **Parts**: Seeed XIAO nRF52840 Sense (mic, Bluetooth, charging), a microSD module, a 6 × 6 mm
+  button, a 500 mAh LiPo (602040) and an optional 0.91" OLED.
+- **Firmware** ([`firmware/`](firmware/README.md)): listens all day and records whenever there
+  is sound, to the card as IMA ADPCM WAV. One button: press to pause or resume, hold to sleep.
+  The OLED shows the time, battery, Bluetooth and recording state, and a live sound wave.
+  Bluetooth syncs the clock and the files and streams live audio.
+- **Enclosure** ([`hardware/enclosure/`](hardware/enclosure/README.md)): a parametric
+  [build123d](https://github.com/gumyr/build123d) script that writes printable STLs. Every part
+  sits in its own pocket, the lid clicks in, and four 8 × 1 mm magnets sit on the MagSafe ring,
+  so nothing needs glue. The parts are wired with thin soldered wires (the case is too thin for
+  connectors).
 
 ## Syncing the recorder
 
