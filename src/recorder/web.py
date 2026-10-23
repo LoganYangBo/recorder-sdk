@@ -770,12 +770,21 @@ class App:
             if ctx is None:
                 raise ApiError(404, f"no word {wid}")
             path = store.recording(ctx["recording_id"]).path
-        w = ctx["word"]
-        with self.model_lock:  # the audio cache is shared
-            try:
-                audio = self._recording_audio(path)
-            except FileNotFoundError as e:
-                raise ApiError(400, f"audio file not found: {e.filename}") from e
+            w = ctx["word"]
+            with self.model_lock:  # the audio cache is shared
+                try:
+                    audio = self._recording_audio(path)
+                except FileNotFoundError as e:
+                    raise ApiError(400, f"audio file not found: {e.filename}") from e
+                # Whisper's word times are often off by a word; align the
+                # sentence now if the background analysis hasn't yet
+                seg = ctx["segment_id"]
+                aligner = self.aligner() if self._aligner is not None else None
+                if aligner is not None and not store.segment_aligned(seg):
+                    s0, s1 = ctx["segment_start"], ctx["segment_end"]
+                    new = ops.align_segment(store, aligner, audio, seg, s0, s1)
+                    if w.id in new:
+                        w.start, w.end = new[w.id]
         clip = audio[max(0, int((w.start - pad) * 16000)) : int((w.end + pad) * 16000)].copy()
         fade = min(160, len(clip) // 2)  # 10 ms
         if fade:

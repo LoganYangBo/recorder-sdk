@@ -80,3 +80,27 @@ def test_suggest_aligns_segments_with_unsure_words(tmp_path, monkeypatch):
         assert store.corrections()[0]["start"] == pytest.approx(1.7)
         assert store.pending_unsure(align=True) == {}
         assert ops.suggest_words(store, tr, 1, aligner=aligner) == 0
+
+
+def test_word_clip_aligns_its_sentence_first(tmp_path, monkeypatch):
+    import io
+    import wave
+
+    from recorder.web import App
+
+    monkeypatch.setattr(speaker_mod, "load_audio", lambda path: np.zeros(10 * 16000, np.float32))
+    (tmp_path / "a.wav").write_bytes(b"x")
+    words = [Word(1.0, 1.5, "I", 0.9), Word(1.5, 2.0, "sink", 0.3)]
+    t = Transcript("en", 10, [Segment(1, 2, "I sink", words=words)])
+    with Store(tmp_path / "t.db") as store:
+        store.save(tmp_path / "a.wav", "h", t)
+        wid = store.segments(1, words=True)[0].words[1].id
+    aligner = FakeAligner()
+    app = App(tmp_path / "t.db", aligner=aligner)
+    with wave.open(io.BytesIO(app.word_clip(wid, pad=0))) as f:
+        # the aligned 1.7-2.1 s, not Whisper's 0.5 s
+        assert abs(f.getnframes() - 0.4 * 16000) <= 1
+    with Store(tmp_path / "t.db") as store:
+        assert store.segment_aligned(store.word_context(wid)["segment_id"])
+    app.word_clip(wid)
+    assert len(aligner.calls) == 1  # stored: not aligned again
