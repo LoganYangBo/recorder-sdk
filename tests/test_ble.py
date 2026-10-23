@@ -197,3 +197,38 @@ def test_link_without_a_recorder_in_range():
 
     with pytest.raises(RecorderError, match="no recorder"):
         ble.BleLink(finder=finder).connect()
+
+
+def test_cli_sync_over_bluetooth_transcribes_as_files_arrive(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("av")
+    from test_adpcm import ima_wav
+    from test_sync import FakeTranscriber
+
+    from recorder import Store, cli
+
+    blocks = [bytes([0, 0, 10, 0]) + bytes(range(i, i + 252)) for i in range(3)]
+    fake = FakeRecorder(
+        {
+            "REC/20261020/093000.WAV": ima_wav(blocks),
+            "REC/20261020/094000.WAV": ima_wav(blocks[::-1]),
+        }
+    )
+    order = []
+
+    class Tracking(FakeTranscriber):
+        def transcribe(self, path):
+            order.append(("transcribe", len(fake.sent)))
+            return super().transcribe(path)
+
+    monkeypatch.setattr(cli, "_ble", lambda args, work: run(_with(fake, work)))
+    monkeypatch.setattr(cli, "_transcriber", lambda args: Tracking())
+    db = str(tmp_path / "t.db")
+    cli.main(["--db", db, "sync", "--ble", "--no-speakers", "--no-suggest", "--delete"])
+    out = capsys.readouterr().out
+    assert "bluetooth: 2 new" in out and "deleted 2 synced recording(s)" in out
+    assert len(order) == 2 and fake.files == {}
+    with Store(db) as store:
+        assert [r.started_at for r in store.recordings()] == [
+            "2026-10-20T09:30:00",
+            "2026-10-20T09:40:00",
+        ]

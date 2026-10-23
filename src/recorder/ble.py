@@ -5,12 +5,12 @@ CTRL takes a command line and notifies the replies, one line each; DATA
 notifies file contents as packets of a 4-byte little-endian offset plus bytes;
 LIVE notifies live audio, one IMA ADPCM block per packet (see adpcm.py).
 
-    ?                 -> RECORDER 3 <stamp|unset> <state> <file|-> ... bat=<V> pct=<%>
+    ?                 -> RECORDER 4 <stamp|unset> <state> <file|-> ... bat=<V> pct=<%>
     T<seconds>        -> OK <stamp>          (local wall-clock time, as if UTC)
     L                 -> F <path> <size> ... END   (finished files only)
     G<offset> <path>  -> DATA packets, then DONE <size>, or ERR ...
     X                 -> STOPPED             (stops a listing or download)
-    D<path>           -> OK / ERR ...
+    D<path>           -> OK / ERR ...       (an emptied date folder goes too)
     S1 / S0           -> OK                  (live audio on / off)
 
 Needs bleak (the `device` extra). Everything here takes a connected bleak
@@ -206,10 +206,15 @@ class BleRecorder:
 
 
 async def download_new(
-    rec: BleRecorder, inbox: Path, log: Callable[[str], None] = lambda msg: None
+    rec: BleRecorder,
+    inbox: Path,
+    log: Callable[[str], None] = lambda msg: None,
+    on_file: Callable[[str, Path], None] | None = None,
 ) -> list[tuple[str, Path]]:
     """Fetch every finished recording not already in `inbox` (kept as on the card:
-    inbox/REC/20261020/093000.WAV); returns (card path, local path) of all the card's files."""
+    inbox/REC/20261020/093000.WAV); returns (card path, local path) of all the card's files.
+    `on_file(card path, local path)` is called as each file is in, so it can be processed
+    while the next one downloads."""
     files = await rec.list_files()
     out = []
     for path, size in files:
@@ -218,6 +223,8 @@ async def download_new(
             log(f"downloading {path} ({size // 1024} KB)")
             await rec.fetch(path, size, dest)
         out.append((path, dest))
+        if on_file:
+            on_file(path, dest)
     return out
 
 

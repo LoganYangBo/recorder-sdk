@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .models import Transcript
@@ -25,6 +26,16 @@ class Result:
     path: Path
     skipped: bool  # True if this file was already in the database
     error: str | None = None  # set (and recording_id None) if processing failed
+    duration: float = 0.0  # seconds of audio
+    timings: dict[str, float] = field(default_factory=dict)  # seconds per stage
+
+    def timing(self) -> str:
+        """'600 s of audio: decode 1.2 s, transcribe 21.0 s (29x), speakers 2.1 s'"""
+        parts = []
+        for stage, t in self.timings.items():
+            speed = f" ({self.duration / t:.0f}x)" if stage == "transcribe" and t > 0 else ""
+            parts.append(f"{stage} {t:.1f} s{speed}")
+        return f"{self.duration:.0f} s of audio: " + ", ".join(parts)
 
 
 class Pipeline:
@@ -51,27 +62,51 @@ class Pipeline:
         self._done: set[str] = set()  # hashes handled in this run, so duplicates aren't redone
 
     def process_file(
-        self, path: str | Path, started_at: str | None = None, digest: str | None = None
+        self,
+        path: str | Path,
+        started_at: str | None = None,
+        digest: str | None = None,
+        stored_path: str | Path | None = None,
     ) -> Result:
         """Transcribe, label and store one file. `digest` identifies the
         content (default: the file's sha256; sync passes the hash of the
-        original when it stores a compressed copy)."""
+        original when it stores a compressed copy). `stored_path` is where the
+        recording will live, if not at `path` (sync transcribes the WAV while
+        its compressed copy is still being made).
+
+        The audio is decoded once and shared by Whisper and the speaker
+        labeller, when both can take samples."""
         path = Path(path)
         digest = digest or file_sha256(path)
         existing = self.store.find_by_hash(digest)
         if existing and (not self.reprocess or digest in self._done):
             return Result(existing.id, path, skipped=True)
-        transcript = self.transcriber.transcribe(path)
-        transcript = self.labeler.label(path, transcript)
+        timings: dict[str, float] = {}
+        t = time.perf_counter()
+        load = getattr(self.transcriber, "load_audio", None)
+        label_audio = getattr(self.labeler, "label_audio", None)
+        audio = load(path) if load else None
+        if audio is not None:
+            timings["decode"] = time.perf_counter() - t
+            t = time.perf_counter()
+        transcript = self.transcriber.transcribe(path if audio is None else audio)
+        timings["transcribe"] = time.perf_counter() - t
+        if not isinstance(self.labeler, NoopLabeler):
+            t = time.perf_counter()
+            if audio is not None and label_audio:
+                transcript = label_audio(audio, transcript)
+            else:
+                transcript = self.labeler.label(path, transcript)
+            timings["speakers"] = time.perf_counter() - t
         rid = self.store.save(
-            path,
+            stored_path or path,
             digest,
             transcript,
             started_at=started_at,
             replace_id=existing.id if existing else None,
         )
         self._done.add(digest)
-        return Result(rid, path, skipped=False)
+        return Result(rid, path, False, duration=transcript.duration, timings=timings)
 
     def process_source(self, source: AudioSource) -> list[Result]:
         """Process every file; one failing (corrupt, unreadable) doesn't stop

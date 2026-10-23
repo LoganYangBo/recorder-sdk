@@ -1,6 +1,8 @@
 import os
 import sys
 
+import numpy as np
+
 from recorder import transcribe
 
 
@@ -42,12 +44,46 @@ def test_whisper_passes_options_and_keeps_words(monkeypatch):
 
     t = transcribe.WhisperTranscriber(model="small", hotwords="Logan", initial_prompt="Hi Logan.")
     t._model = FakeModel()
+    monkeypatch.setattr(t, "load_audio", lambda path: np.zeros(16000, np.float32))
     out = t.transcribe("a.wav")
 
     assert calls["hotwords"] == "Logan" and calls["initial_prompt"] == "Hi Logan."
+    assert calls["vad_filter"] is True  # one second: not batched
     assert calls["word_timestamps"] is True
     (seg,) = out.segments
     assert seg.text == "hi Logan" and seg.avg_logprob == -0.3
     assert [w.word for w in seg.words] == ["hi", "Logan"]
     assert out.params["model"] == "small" and out.params["hotwords"] == "Logan"
     assert "initial_prompt" in out.params and "language" not in out.params
+
+
+def test_long_audio_is_batched_with_vocab_hotwords(monkeypatch):
+    import types
+
+    calls = {}
+
+    class Info:
+        language, duration = "en", 120.0
+
+    class FakeBatched:
+        def __init__(self, model):
+            calls["model"] = model
+
+        def transcribe(self, audio, **kw):
+            calls.update(kw)
+            return iter([]), Info()
+
+    fake_module = types.ModuleType("faster_whisper")  # CI runs without faster-whisper
+    fake_module.BatchedInferencePipeline = FakeBatched
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_module)
+    vocab = ["Mia"]
+    t = transcribe.WhisperTranscriber(hotwords="PyTorch", vocab=lambda: " ".join(vocab))
+    t._model = object()
+    out = t.transcribe(np.zeros(16000 * 120, np.float32))
+    assert calls["batch_size"] == transcribe.DEFAULT_BATCH
+    assert calls["without_timestamps"] is False  # sentence-sized segments for speaker labels
+    assert calls["hotwords"] == "PyTorch Mia"
+    assert out.params["model"] == "large-v3-turbo" and out.params["batch_size"] == 8
+    vocab.append("su7")  # read again for the next file
+    t.transcribe(np.zeros(16000 * 120, np.float32))
+    assert calls["hotwords"] == "PyTorch Mia su7"

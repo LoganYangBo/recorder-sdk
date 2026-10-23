@@ -84,6 +84,28 @@ class EcapaEmbedder:
             emb = model.encode_batch(torch.from_numpy(audio).unsqueeze(0))
         return emb.squeeze().cpu().numpy()
 
+    def embed_many(self, clips: list[np.ndarray], batch: int = 32) -> list[np.ndarray]:
+        """embed() for many clips, padded and run `batch` at a time (in order of
+        length, so little of each batch is padding): much faster on a GPU."""
+        import numpy as np
+        import torch
+
+        model = self._load()
+        out: list = [None] * len(clips)
+        order = sorted(range(len(clips)), key=lambda i: len(clips[i]))
+        for k in range(0, len(order), batch):
+            idx = order[k : k + batch]
+            longest = max(len(clips[i]) for i in idx)
+            wavs = np.zeros((len(idx), longest), dtype=np.float32)
+            for row, i in enumerate(idx):
+                wavs[row, : len(clips[i])] = clips[i]
+            lens = torch.tensor([len(clips[i]) / longest for i in idx])
+            with torch.no_grad():
+                emb = model.encode_batch(torch.from_numpy(wavs), lens)
+            for row, i in enumerate(idx):
+                out[i] = emb[row].squeeze().cpu().numpy()
+        return out
+
 
 def load_audio(path: str | Path) -> np.ndarray:
     from faster_whisper import decode_audio
@@ -158,13 +180,20 @@ class VoiceprintLabeler:
         return self.label_audio(load_audio(path), transcript)
 
     def label_audio(self, audio: np.ndarray, transcript: Transcript) -> Transcript:
-        """Like label(), for 16 kHz samples already in memory."""
+        """Like label(), for 16 kHz samples already in memory. Embedders with an
+        embed_many() method get all the clips at once (batched on the GPU)."""
+        todo = []
         for s in transcript.segments:
             clip = self._clip(audio, s.start, s.end)
             if len(clip) < SAMPLE_RATE // 4:  # under 0.25 s: nothing to go on
                 s.speaker = s.speaker_match = s.speaker_score = None
-                continue
-            scores = self.matrix @ _normalize(self.embedder.embed(clip))
+            else:
+                todo.append((s, clip))
+        clips = [c for _, c in todo]
+        many = getattr(self.embedder, "embed_many", None)
+        embeddings = many(clips) if many else [self.embedder.embed(c) for c in clips]
+        for (s, _), emb in zip(todo, embeddings):
+            scores = self.matrix @ _normalize(emb)
             best = int(scores.argmax())
             s.speaker_match, s.speaker_score = self.names[best], float(scores[best])
         return self.relabel(transcript)

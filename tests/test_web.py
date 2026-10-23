@@ -459,3 +459,27 @@ def test_set_start_time(server):
     assert e.value.code == 400
     jcall(server, "/api/recordings/1/started", "POST", {"started_at": ""})
     assert jcall(server, "/api/recordings")[0]["started_at"] is None
+
+
+def test_vocab_and_export(server):
+    v = jcall(server, "/api/vocab", "POST", {"terms": ["PyTorch", "Mia"], "kind": "term"})
+    assert v["added"] == ["PyTorch", "Mia"]
+    found = jcall(server, "/api/vocab/import", "POST", {"text": "Lunch with Zoe at Xiaomi."})
+    assert found["found"] == ["Zoe", "Xiaomi"] and len(found["vocab"]) == 2
+    jcall(server, "/api/vocab/import", "POST", {"text": "Lunch with Zoe.", "add": True})
+    assert [v["term"] for v in jcall(server, "/api/vocab/Mia", "DELETE")] == ["Zoe", "PyTorch"]
+    status, headers, body = call(server, "/api/recordings/1/export.srt")
+    assert body.decode().startswith("1\n00:00:00,000 --> 00:00:02,000\nhello Logan")
+    assert "talk.srt" in headers["Content-Disposition"]
+    assert call(server, "/api/recordings/1/export.md")[2].decode().startswith("# talk.m4a")
+
+
+def test_correction_reason_and_name_to_vocab(server):
+    wid = jcall(server, "/api/recordings/1/segments")[0]["words"][1][4]
+    c = jcall(server, f"/api/words/{wid}/correct", "POST", {"word": "Logan", "reason": "misheard"})
+    assert c["reason"] is None  # same as heard: a confirmation
+    c = jcall(server, f"/api/words/{wid}/correct", "POST", {"word": "Lorgan"})
+    assert c["reason"] == "misheard"  # not the wearer's words (unlabelled)
+    assert [v["term"] for v in jcall(server, "/api/vocab")] == ["Lorgan"]
+    with pytest.raises(urllib.error.HTTPError):
+        jcall(server, f"/api/words/{wid}/correct", "POST", {"word": "x", "reason": "bad"})

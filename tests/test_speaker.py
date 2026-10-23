@@ -205,3 +205,40 @@ def test_v3_scores_are_backfilled_as_me(tmp_path):
     with Store(db) as store:
         (seg,) = store.segments(1)
         assert (seg.speaker, seg.speaker_match) == ("other", "me")
+
+
+def test_batched_embedder_gets_every_clip_at_once():
+    class Batched(BandEmbedder):
+        def embed_many(self, clips):
+            self.batches = getattr(self, "batches", []) + [len(clips)]
+            return [self.embed(c) for c in clips]
+
+    audio = np.concatenate([tone(200, 3), tone(800, 3), tone(200, 3)])
+    emb = Batched()
+    labeler = VoiceprintLabeler(emb, {"me": np.array([1.0, 0.0])}, threshold=0.5)
+    t = Transcript("en", 9, [Segment(0, 3, "a"), Segment(3, 6, "b"), Segment(6, 9, "c")])
+    labeler.label_audio(audio, t)
+    assert emb.batches == [3] and [s.speaker for s in t.segments] == ["me", "other", "me"]
+
+
+def test_pipeline_decodes_once_for_whisper_and_speakers(tmp_path):
+    audio = np.concatenate([tone(200, 3), tone(800, 3)])
+    decoded = []
+
+    class Whisper:
+        def load_audio(self, path):
+            decoded.append(path)
+            return audio
+
+        def transcribe(self, samples):
+            assert samples is audio
+            return Transcript("en", 6, [Segment(0, 3, "mine"), Segment(3, 6, "theirs")])
+
+    labeler = VoiceprintLabeler(BandEmbedder(), {"me": np.array([1.0, 0.0])}, threshold=0.5)
+    (tmp_path / "a.wav").write_bytes(b"x")
+    with Store(tmp_path / "t.db") as store:
+        r = Pipeline(Whisper(), store, labeler).process_file(tmp_path / "a.wav")
+        assert [s.speaker for s in store.segments(r.recording_id)] == ["me", "other"]
+    assert len(decoded) == 1
+    assert list(r.timings) == ["decode", "transcribe", "speakers"] and r.duration == 6
+    assert r.timing().startswith("6 s of audio: decode ")

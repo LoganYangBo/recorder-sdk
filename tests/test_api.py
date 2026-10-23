@@ -86,3 +86,32 @@ def test_unsure_words_and_corrections(tmp_path):
         assert rec.unsure_words(include_reviewed=True)[0].corrected_from == "think"
         (c,) = rec.corrections()
         assert c.confirmed and rec.corrections(include_confirmed=False) == []
+
+
+def test_conversations_span_recordings(tmp_path):
+    with Recorder(build(tmp_path)) as rec:
+        convs = rec.conversations(day="2026-10-16")
+        assert len(convs) == 2  # 09:00 and the late-night one, hours apart
+        morning = convs[0]
+        assert morning.start == datetime(2026, 10, 16, 9, 0, 0)
+        assert morning.end == datetime(2026, 10, 16, 9, 0, 6)
+        assert morning.recordings == [1] and morning.speakers == {"me": 4.0, "Alice": 2.0}
+        assert morning.text.startswith("me: I think we should")
+        # the late-night talk runs on past midnight into the next file's day
+        late = rec.conversations(since="2026-10-16T23:00:00", until="2026-10-17T01:00:00")
+        assert [u.text for u in late[0].utterances] == ["late night", "after midnight"]
+        assert len(rec.conversations(day="2026-10-16", min_seconds=5)) == 1
+
+
+def test_changes_since_a_cursor(tmp_path):
+    db = build(tmp_path)
+    with Recorder(db) as rec:
+        first = rec.changes()
+        assert first.changed == [1, 2, 3, 4] and first.deleted == []
+        assert rec.changes(first.cursor).changed == []
+        rec.store.rename(2, "Late")
+        rec.store.correct_word(2, "thing")  # a word of recording 1
+        rec.store.delete(3)
+        c = rec.changes(first.cursor)
+        assert c.changed == [2, 1] and c.deleted == [3] and c.cursor > first.cursor
+        assert rec.changes(c.cursor) == type(c)([], [], c.cursor)

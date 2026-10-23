@@ -78,6 +78,9 @@ class UnsureWord:
     start: float
     end: float
     at: datetime | None
+    # whose mistake a correction was: "misheard" (Whisper's) / "mispronounced" (the
+    # speaker's) / None (confirmed, not corrected, or the user didn't say)
+    reason: str | None = None
 
 
 @dataclass
@@ -90,10 +93,44 @@ class Correction:
     start: float
     end: float
     created_at: str
+    reason: str | None = None  # "misheard" / "mispronounced" / None (see UnsureWord.reason)
 
     @property
     def confirmed(self) -> bool:
         return self.word == self.heard
+
+
+@dataclass
+class Conversation:
+    """Talk that runs on without a long break, across the recorder's 10-minute files."""
+
+    start: datetime
+    end: datetime
+    utterances: list[Utterance] = field(default_factory=list)
+
+    @property
+    def recordings(self) -> list[int]:
+        return sorted({u.recording_id for u in self.utterances})
+
+    @property
+    def speakers(self) -> dict[str, float]:
+        """Seconds spoken by each speaker ("unlabelled" for None), most first."""
+        out: dict[str, float] = {}
+        for u in self.utterances:
+            key = u.speaker or "unlabelled"
+            out[key] = out.get(key, 0.0) + u.duration
+        return dict(sorted(out.items(), key=lambda kv: -kv[1]))
+
+    @property
+    def text(self) -> str:
+        return "\n".join(f"{u.speaker or '?'}: {u.text}" for u in self.utterances)
+
+
+@dataclass
+class Changes:
+    changed: list[int]  # recordings added, re-transcribed, corrected, relabelled, renamed...
+    deleted: list[int]
+    cursor: int  # pass to changes() next time
 
 
 @dataclass
@@ -252,9 +289,10 @@ class Recorder:
             args.append(_iso(until))
         rows = self.store.conn.execute(
             "SELECT w.id, w.word, w.probability, w.candidates, w.original, s.text, s.speaker, "
-            "       r.id, w.start, w.end, r.started_at "
+            "       r.id, w.start, w.end, r.started_at, c.reason "
             "FROM words w JOIN segments s ON s.id = w.segment_id "
             "JOIN recordings r ON r.id = s.recording_id "
+            "LEFT JOIN corrections c ON c.word_id = w.id "
             f"WHERE {' AND '.join(where)} "
             "ORDER BY r.started_at IS NULL, r.started_at, r.id, w.start",
             args,
@@ -272,8 +310,9 @@ class Recorder:
                 start,
                 end,
                 _at(started, start),
+                reason,
             )  # fmt: skip
-            for wid, word, p, c, orig, sentence, spk, rid, start, end, started in rows
+            for wid, word, p, c, orig, sentence, spk, rid, start, end, started, reason in rows
         ]
 
     def corrections(self, include_confirmed: bool = True) -> list[Correction]:
@@ -282,8 +321,48 @@ class Recorder:
         for c in self.store.corrections():
             corr = Correction(
                 c["chosen"], c["heard"], c["sentence"], c["speaker"], c["recording_id"],
-                c["start"], c["end"], c["created_at"],
+                c["start"], c["end"], c["created_at"], c["reason"],
             )  # fmt: skip
             if include_confirmed or not corr.confirmed:
                 out.append(corr)
         return out
+
+    # ---- conversations and changes ----
+
+    def conversations(
+        self,
+        day: When = None,
+        since: When = None,
+        until: When = None,
+        gap: float = 300.0,
+        min_seconds: float = 0.0,
+    ) -> list[Conversation]:
+        """What was said, grouped into conversations: utterances (from any number of
+        recordings) with no silence longer than `gap` seconds between them. Only
+        recordings with a known start time count. Conversations with less than
+        `min_seconds` of speech are left out."""
+        utts = [u for u in self.utterances(day=day, since=since, until=until) if u.at]
+        out: list[Conversation] = []
+        last_end: datetime | None = None
+        for u in utts:
+            end = u.at + timedelta(seconds=u.duration)
+            if last_end is None or (u.at - last_end).total_seconds() > gap:
+                out.append(Conversation(u.at, end))
+            conv = out[-1]
+            conv.utterances.append(u)
+            conv.end = max(conv.end, end)
+            last_end = conv.end
+        return [c for c in out if sum(u.duration for u in c.utterances) >= min_seconds]
+
+    def changes(self, since: int = 0) -> Changes:
+        """Recordings added or changed (transcribed again, corrected, relabelled,
+        renamed, re-dated) and deleted since cursor `since` (0: everything). Keep the
+        returned cursor and pass it next time, instead of re-reading everything."""
+        changed, deleted, cursor = self.store.changes(since)
+        return Changes(changed, deleted, cursor)
+
+    # ---- vocab ----
+
+    def vocab(self) -> list[str]:
+        """The user's names and jargon (newest first), as given to Whisper."""
+        return [v["term"] for v in self.store.vocab()]

@@ -14,7 +14,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import ops
 from .ingest import has_speech
@@ -182,8 +182,11 @@ class App:
     def transcriber(self):
         if self._transcriber is None:
             from .transcribe import WhisperTranscriber
+            from .vocab import from_store
 
-            self._transcriber = WhisperTranscriber(device=self.device, **self.whisper)
+            self._transcriber = WhisperTranscriber(
+                device=self.device, vocab=from_store(self.db), **self.whisper
+            )
         return self._transcriber
 
     def aligner(self):
@@ -573,9 +576,11 @@ class App:
         return self._enqueue("device", "Recorder", lambda job: self._sync(job, delete, threshold))
 
     def _sync(self, job: dict, delete: bool, threshold: float) -> None:
-        """Download each recording, then import it before the next one, so results come in
-        as they go; the job shows the file count, bytes and download speed."""
+        """Download each recording and import it while the next one downloads, so results
+        come in as they go; the job shows the file count, bytes and download speed.
+        Suggestions for unsure words are queued once every file is in."""
         import time
+        from concurrent.futures import ThreadPoolExecutor
 
         from .ingest import Syncer
         from .sync import AudioFile, started_at_of
@@ -584,34 +589,40 @@ class App:
         files = self._gadget_call(lambda rec: rec.list_files())
         total = sum(n for _, n in files)
         job.update(progress=[0, len(files)], bytes=[0, total], rate=None)
-        done_bytes = fetched = 0
+        offsets = [sum(n for _, n in files[:i]) for i in range(len(files))]
+        fetched = {"bytes": 0}
         started = time.monotonic()
+
+        def download(i: int) -> Path:
+            path, size = files[i]
+            dest = inbox / path
+            if not (dest.is_file() and dest.stat().st_size == size):
+                before = fetched["bytes"]
+
+                def progress(got):
+                    job["bytes"] = [offsets[i] + got, total]
+                    job["rate"] = (before + got) / max(time.monotonic() - started, 0.1)
+
+                self._gadget_call(lambda rec: rec.fetch(path, size, dest, progress))
+                fetched["bytes"] += size
+            job["bytes"] = [offsets[i] + size, total]
+            return dest
+
         new = []
         syncer = None  # the models load when the first file is in, not before
-        with self.store() as store:
+        with self.store() as store, ThreadPoolExecutor(1) as downloader:
+            nxt = downloader.submit(download, 0) if files else None
             for i, (path, size) in enumerate(files):
                 job["stage"] = "downloading"
-                dest = inbox / path
-                if not (dest.is_file() and dest.stat().st_size == size):
-                    base, before = done_bytes, fetched
-
-                    def progress(got, base=base, before=before):
-                        job["bytes"] = [base + got, total]
-                        job["rate"] = (before + got) / max(time.monotonic() - started, 0.1)
-
-                    self._gadget_call(
-                        lambda rec, p=path, n=size, d=dest: rec.fetch(p, n, d, progress)
-                    )
-                    fetched += size
-                done_bytes += size
-                job["bytes"] = [done_bytes, total]
+                dest = nxt.result()
+                nxt = downloader.submit(download, i + 1) if i + 1 < len(files) else None
                 job["stage"] = "transcribing"
                 with self.model_lock:
                     if syncer is None:
                         labeler = self._labeler(store, threshold)
                         pipeline = Pipeline(self.transcriber(), store, labeler)
                         syncer = Syncer(store, pipeline, self.library, drop_noise=True)
-                    r = syncer.sync_file(AudioFile(dest, started_at_of(dest)))
+                    r = syncer.sync_file(AudioFile(dest, started_at_of(dest)), after=False)
                 if r.status == "new":
                     new.append(r.recording_id)
                     job.update(new=len(new), recording=r.recording_id)
@@ -759,12 +770,21 @@ class App:
             if ctx is None:
                 raise ApiError(404, f"no word {wid}")
             path = store.recording(ctx["recording_id"]).path
-        w = ctx["word"]
-        with self.model_lock:  # the audio cache is shared
-            try:
-                audio = self._recording_audio(path)
-            except FileNotFoundError as e:
-                raise ApiError(400, f"audio file not found: {e.filename}") from e
+            w = ctx["word"]
+            with self.model_lock:  # the audio cache is shared
+                try:
+                    audio = self._recording_audio(path)
+                except FileNotFoundError as e:
+                    raise ApiError(400, f"audio file not found: {e.filename}") from e
+                # Whisper's word times are often off by a word; align the
+                # sentence now if the background analysis hasn't yet
+                seg = ctx["segment_id"]
+                aligner = self.aligner() if self._aligner is not None else None
+                if aligner is not None and not store.segment_aligned(seg):
+                    s0, s1 = ctx["segment_start"], ctx["segment_end"]
+                    new = ops.align_segment(store, aligner, audio, seg, s0, s1)
+                    if w.id in new:
+                        w.start, w.end = new[w.id]
         clip = audio[max(0, int((w.start - pad) * 16000)) : int((w.end + pad) * 16000)].copy()
         fade = min(160, len(clip) // 2)  # 10 ms
         if fade:
@@ -782,14 +802,19 @@ class App:
     def word_correct(self, q, body, wid: int):
         from . import learn
 
-        chosen = learn.normalize(str(body.get("word", "")))
+        raw = " ".join(str(body.get("word", "")).split())
+        chosen = learn.normalize(raw)
         if not chosen:
             raise ApiError(400, "empty word")
+        reason = body.get("reason") or None
         with self.store() as store:
             try:
-                c = store.correct_word(wid, chosen)
+                # keep the user's capitals (Mia, su7) so a name reaches the vocab as typed
+                c = store.correct_word(wid, raw if raw[:1].isupper() else chosen, reason)
             except KeyError as e:
                 raise ApiError(404, str(e)) from e
+            except ValueError as e:
+                raise ApiError(400, str(e)) from e
             w = store.word_context(wid)["word"]
         return {
             **c,
@@ -797,6 +822,51 @@ class App:
             "probability": w.probability,
             "compare": learn.compare(c["chosen"], c["heard"]),
         }
+
+    # ---- vocab: names and jargon given to Whisper ----
+
+    def vocab_list(self, q, body):
+        with self.store() as store:
+            return store.vocab()
+
+    def vocab_add(self, q, body):
+        terms = body.get("terms") or [body.get("term", "")]
+        source = "import" if body.get("source") == "import" else "manual"
+        with self.store() as store:
+            added = [t for t in terms if store.add_vocab(str(t), body.get("kind"), source)]
+            return {"added": added, "vocab": store.vocab()}
+
+    def vocab_remove(self, q, body, term: str):
+        with self.store() as store:
+            if not store.remove_vocab(term):
+                raise ApiError(404, f"not in the vocab: {term}")
+            return store.vocab()
+
+    def vocab_import(self, q, body):
+        """Pick names and unusual words out of pasted text; with "add": true, add them."""
+        from .vocab import candidates
+
+        with self.store() as store:
+            found = candidates(str(body.get("text", "")), {v["term"] for v in store.vocab()})
+            if body.get("add"):
+                for t in found:
+                    store.add_vocab(t, source="import")
+            return {"found": found, "vocab": store.vocab()}
+
+    def export_text(self, rid: int, fmt: str) -> tuple[bytes, str, str]:
+        """(body, content type, file name) of a transcript export."""
+        from .export import export
+
+        with self.store() as store:
+            rec = store.recording(rid)
+            if rec is None:
+                raise ApiError(404, f"no recording {rid}")
+            try:
+                text = export(rec, store.segments(rid), fmt)
+            except ValueError as e:
+                raise ApiError(400, str(e)) from e
+        ctype = {"md": "text/markdown", "srt": "application/x-subrip"}.get(fmt, "text/plain")
+        return text.encode(), f"{ctype}; charset=utf-8", f"{Path(rec.name).stem}.{fmt}"
 
     def word_compare(self, q, body):
         from . import learn
@@ -916,6 +986,10 @@ ROUTES = [  # (method, path, handler, raw body)
     ("POST", r"/api/words/(\d+)/correct", "word_correct"),
     ("GET", r"/api/compare", "word_compare"),
     ("GET", r"/api/corrections", "correction_list"),
+    ("GET", r"/api/vocab", "vocab_list"),
+    ("POST", r"/api/vocab", "vocab_add"),
+    ("POST", r"/api/vocab/import", "vocab_import"),
+    ("DELETE", r"/api/vocab/(.+)", "vocab_remove"),
     ("GET", r"/api/device", "gadget_state"),
     ("POST", r"/api/device/connect", "gadget_connect"),
     ("POST", r"/api/device/disconnect", "gadget_disconnect"),
@@ -960,6 +1034,11 @@ def make_handler(app: App):
                 q = parse_qs(url.query)
                 data, ctype = app.pronunciation(q.get("word", [""])[0], q.get("voice", ["dict"])[0])
                 return self._send(200, data, ctype, {"Cache-Control": "max-age=86400"})
+            m = re.fullmatch(r"/api/recordings/(\d+)/export\.(md|srt|txt)", url.path)
+            if self.command == "GET" and m:
+                data, ctype, name = app.export_text(int(m.group(1)), m.group(2))
+                disposition = f"attachment; filename*=UTF-8''{quote(name)}"
+                return self._send(200, data, ctype, {"Content-Disposition": disposition})
             m = re.fullmatch(r"/api/words/(\d+)/clip.wav", url.path)
             if self.command == "GET" and m:
                 return self._send(200, app.word_clip(int(m.group(1))), "audio/wav")
@@ -1009,7 +1088,7 @@ def make_handler(app: App):
                 self._dispatch()
             except ApiError as e:
                 self._json(e.status, {"error": str(e)})
-            except (BrokenPipeError, ConnectionResetError):
+            except ConnectionError:  # the browser hung up (e.g. a new click on Windows)
                 pass
             except Exception as e:  # report instead of dropping the connection
                 self._json(500, {"error": f"{type(e).__name__}: {e}"})

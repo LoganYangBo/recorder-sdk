@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -28,6 +29,11 @@ def _add_nvidia_dll_dirs() -> None:
             os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
 
 
+DEFAULT_MODEL = "large-v3-turbo"  # ~8x faster decoding than large-v3, about as accurate on English
+DEFAULT_BATCH = 8  # 30 s windows decoded together on the GPU (0 = one after another)
+BATCH_MIN_SECONDS = 60.0  # shorter audio (live pieces, clips) gains nothing from batching
+
+
 class Transcriber(Protocol):
     def transcribe(self, path: str | Path) -> Transcript: ...
 
@@ -39,12 +45,19 @@ class WhisperTranscriber:
     CTranslate2 choose (float16 on GPU, int8 on CPU).
 
     initial_prompt / hotwords help with names and jargon Whisper would
-    otherwise mishear, e.g. hotwords="PyTorch Kubernetes".
+    otherwise mishear, e.g. hotwords="PyTorch Kubernetes". `vocab` is a
+    callable returning extra hotwords (the user's word list, see vocab.py),
+    asked again for every file so new words apply at once.
+
+    With batch_size > 0, audio longer than a minute is cut at pauses (Silero
+    VAD) into windows of up to 30 s that are decoded batch_size at a time,
+    which keeps the GPU busy: several times faster on long recordings. Each
+    window is decoded on its own (no text carried over from the one before).
     """
 
     def __init__(
         self,
-        model: str = "large-v3",
+        model: str = DEFAULT_MODEL,
         device: str = "auto",
         compute_type: str = "default",
         language: str | None = None,
@@ -53,6 +66,8 @@ class WhisperTranscriber:
         word_timestamps: bool = True,
         initial_prompt: str | None = None,
         hotwords: str | None = None,
+        batch_size: int = DEFAULT_BATCH,
+        vocab: Callable[[], str | None] | None = None,
     ):
         self.model_name = model
         self.device = device
@@ -63,7 +78,10 @@ class WhisperTranscriber:
         self.word_timestamps = word_timestamps
         self.initial_prompt = initial_prompt
         self.hotwords = hotwords
+        self.batch_size = batch_size
+        self.vocab = vocab
         self._model = None
+        self._batched = None
 
     @property
     def params(self) -> dict:
@@ -75,9 +93,14 @@ class WhisperTranscriber:
             "beam_size": self.beam_size,
             "word_timestamps": self.word_timestamps,
             "initial_prompt": self.initial_prompt,
-            "hotwords": self.hotwords,
+            "hotwords": self._hotwords(),
+            "batch_size": self.batch_size or None,
         }
         return {k: v for k, v in p.items() if v is not None}
+
+    def _hotwords(self) -> str | None:
+        extra = self.vocab() if self.vocab else None
+        return " ".join(h for h in (self.hotwords, extra) if h) or None
 
     def _load(self):
         if self._model is None:
@@ -93,24 +116,42 @@ class WhisperTranscriber:
             )
         return self._model
 
+    @staticmethod
+    def load_audio(path: str | Path) -> np.ndarray:
+        """16 kHz mono float32 samples of an audio file (decoded once, then shared with
+        the speaker labeller)."""
+        from faster_whisper import decode_audio
+
+        return decode_audio(str(path), sampling_rate=16000)
+
     def transcribe(
         self, path: str | Path | np.ndarray, language: str | None = None, prompt: str | None = None
     ) -> Transcript:
         """Transcribe an audio file, or 16 kHz mono float32 samples. `language` and `prompt`
         (text heard just before, for context) override the transcriber's own for this call."""
         model = self._load()
-        audio = path if hasattr(path, "dtype") else str(path)
+        audio = path if hasattr(path, "dtype") else self.load_audio(path)
         if prompt and self.initial_prompt:
             prompt = f"{self.initial_prompt} {prompt}"
-        segments, info = model.transcribe(
-            audio,
+        options = dict(
             language=language or self.language,
-            vad_filter=self.vad_filter,
             beam_size=self.beam_size,
             word_timestamps=self.word_timestamps,
             initial_prompt=prompt or self.initial_prompt,
-            hotwords=self.hotwords,
+            hotwords=self._hotwords(),
         )
+        if self.batch_size and len(audio) >= BATCH_MIN_SECONDS * 16000:
+            if self._batched is None:
+                from faster_whisper import BatchedInferencePipeline
+
+                self._batched = BatchedInferencePipeline(model)
+            # timestamps on, so each window still splits into sentence-sized segments
+            # (speaker labels are per segment)
+            segments, info = self._batched.transcribe(
+                audio, batch_size=self.batch_size, without_timestamps=False, **options
+            )
+        else:
+            segments, info = model.transcribe(audio, vad_filter=self.vad_filter, **options)
         # segments is a generator; transcription actually runs here
         segs = [
             Segment(
@@ -154,7 +195,7 @@ class WhisperTranscriber:
                 vad_filter=False,
                 condition_on_previous_text=False,
                 initial_prompt=self.initial_prompt,
-                hotwords=self.hotwords,
+                hotwords=self._hotwords(),
             )
             for seg in segments:
                 for w in seg.words or []:

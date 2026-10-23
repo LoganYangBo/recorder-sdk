@@ -1,4 +1,4 @@
-from .api import Correction, Day, Recorder, UnsureWord, Utterance
+from .api import Changes, Conversation, Correction, Day, Recorder, UnsureWord, Utterance
 from .ingest import Syncer, SyncResult
 from .models import Recording, Segment, Transcript, Word
 from .pipeline import Pipeline, Result
@@ -15,10 +15,12 @@ from .sync import AudioFile, AudioSource, DeviceSource, FolderSource, find_devic
 from .transcribe import Transcriber, WhisperTranscriber
 from .turns import Turn, merge_turns
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "AudioFile",
+    "Changes",
+    "Conversation",
     "Correction",
     "Day",
     "DeviceSource",

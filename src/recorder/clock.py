@@ -4,7 +4,7 @@ The recorder (firmware/recorder) has no battery-backed clock, so it learns the t
 computer whenever it is plugged in, and keeps it while it stays switched on. One line each
 way, 115200 baud:
 
-    ?            -> RECORDER 3 <20261020T093000|unset> <LISTEN|REC|PAUSED|FAILED> <file|->
+    ?            -> RECORDER 4 <20261020T093000|unset> <LISTEN|REC|PAUSED|FAILED> <file|->
                     dropped=<n> level=<sound level now> floor=<noise floor> bat=<V> pct=<%>
     T<seconds>   -> OK 20261020T093000
 
