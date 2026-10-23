@@ -1088,7 +1088,7 @@ def make_handler(app: App):
                 self._dispatch()
             except ApiError as e:
                 self._json(e.status, {"error": str(e)})
-            except (BrokenPipeError, ConnectionResetError):
+            except ConnectionError:  # the browser hung up (e.g. a new click on Windows)
                 pass
             except Exception as e:  # report instead of dropping the connection
                 self._json(500, {"error": f"{type(e).__name__}: {e}"})
