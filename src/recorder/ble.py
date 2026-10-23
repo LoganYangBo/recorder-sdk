@@ -5,12 +5,12 @@ CTRL takes a command line and notifies the replies, one line each; DATA
 notifies file contents as packets of a 4-byte little-endian offset plus bytes;
 LIVE notifies live audio, one IMA ADPCM block per packet (see adpcm.py).
 
-    ?                 -> RECORDER 3 <stamp|unset> <state> <file|-> ... bat=<V> pct=<%>
+    ?                 -> RECORDER 4 <stamp|unset> <state> <file|-> ... bat=<V> pct=<%>
     T<seconds>        -> OK <stamp>          (local wall-clock time, as if UTC)
     L                 -> F <path> <size> ... END   (finished files only)
     G<offset> <path>  -> DATA packets, then DONE <size>, or ERR ...
     X                 -> STOPPED             (stops a listing or download)
-    D<path>           -> OK / ERR ...
+    D<path>           -> OK / ERR ...       (an emptied date folder goes too)
     S1 / S0           -> OK                  (live audio on / off)
 
 Needs bleak (the `device` extra). Everything here takes a connected bleak

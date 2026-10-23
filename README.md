@@ -158,7 +158,8 @@ The recorder mounts as a USB drive:
 <drive>/REC/20261016/091500.wav    the same, for firmware limited to 8.3 names
 ```
 
-The firmware in [`firmware/`](firmware/README.md) writes the second form, as IMA ADPCM WAV
+The firmware in [`firmware/`](firmware/README.md) writes the marker itself and the second form,
+as IMA ADPCM WAV
 (4:1), which PyAV decodes like any WAV. The device has no battery-backed clock: every Bluetooth
 connection sets it, `recorder settime` sets it over USB serial, and `recorder sync --watch`
 does so whenever the device is plugged in (all need the `device` extra).
@@ -391,6 +392,8 @@ ruff format --check .
 pytest
 ```
 
-The tests use fakes for every model, so they need no GPU and no downloads. CI (GitHub Actions)
-runs ruff and pytest on Ubuntu and Windows with Python 3.11 and 3.13 on every push and pull
-request.
+The tests use fakes for every model, so they need no GPU and no downloads. With a C++ compiler
+they also run the firmware itself (`firmware/sim`: the microphone plays generated sound, the card
+is a folder, and `ble.py` downloads from it over a simulated radio). CI (GitHub Actions) runs
+ruff and pytest on Ubuntu and Windows with Python 3.11 and 3.13 on every push and pull request,
+and compiles the firmware for the XIAO whenever `firmware/` changes.

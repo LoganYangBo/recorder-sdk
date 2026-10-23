@@ -1,0 +1,30 @@
+name: Firmware
+
+on:
+  push:
+    branches: [main]
+    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+  pull_request:
+    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Board package and libraries
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
+          arduino-cli core update-index
+          arduino-cli core install Seeeduino:nrf52
+          arduino-cli lib install "Adafruit SSD1306"
+          pip install adafruit-nrfutil  # the board package calls it to build the upload .zip
+      - name: Compile (with the screen)
+        run: arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense --warnings default firmware/recorder
+      - name: Compile (USE_SCREEN=0)
+        run: arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense --build-property compiler.cpp.extra_flags=-DUSE_SCREEN=0 firmware/recorder

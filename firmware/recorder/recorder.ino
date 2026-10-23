@@ -1,4 +1,4 @@
-// Recorder firmware v3 for the Seeed XIAO nRF52840 Sense.
+// Recorder firmware v4 for the Seeed XIAO nRF52840 Sense.
 // Board package: "Seeed nRF52 Boards" (not the mbed-enabled one), board "Seeed XIAO nRF52840 Sense".
 //
 // Listens to the onboard PDM mic all the time and records to the microSD card only while
@@ -20,20 +20,26 @@
 // and can stream live audio (`recorder sync --ble`, `recorder live`, src/recorder/ble.py).
 // It also reports the battery, as the standard battery service that phones and Windows show.
 //
-// Files are named by local start time, REC/20261020/093000.WAV (the SD library only does
-// 8.3 names, so the date is the folder). Without a clock they go to REC/NOTIME/00000001.WAV.
-// The board has no battery-backed clock: the computer sets it on every Bluetooth connection or
-// over USB serial (`recorder settime`), and it holds while the power switch stays on.
+// Files are named by local start time, REC/20261020/093000.WAV (the date is the folder). Without
+// a clock they go to REC/NOTIME/00000001.WAV. The board has no battery-backed clock: the
+// computer sets it on every Bluetooth connection or over USB serial (`recorder settime`), and it
+// holds while the battery lasts, through a reset too (the reset button or the watchdog).
+//
+// The card is driven with SdFat (it comes with the board package): DMA transfers and
+// multi-sector writes, so the card and the CPU are busy for a fraction of the time the Arduino
+// SD library kept them. A watchdog restarts the recorder if it ever hangs.
 
 #include <SPI.h>
-#include <SD.h>
+#include <SdFat.h>
 #include <PDM.h>
 #include <bluefruit.h>
 #include <time.h>
 #include "adpcm.h"
 // The OLED needs the Adafruit SSD1306 library (Library Manager). Without it, set this to 0.
 // (A screen that isn't connected is fine either way: it's looked for at power-on.)
+#ifndef USE_SCREEN
 #define USE_SCREEN 1
+#endif
 #if USE_SCREEN
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
@@ -48,8 +54,15 @@ const uint32_t BLOCK_PCM = BLOCK_SAMPLES * 2;      // ring bytes per file block
 const uint32_t CHUNK_SAMPLES = SAMPLE_RATE * 600;  // at most 10 minutes per file
 const uint32_t FLUSH_SAMPLES = SAMPLE_RATE * 30;   // header + flush every 30 s: a power cut loses at most this
 const int SD_CS = 2;                               // D2
+const uint32_t SD_MHZ = 8;  // SPI clock for the card; lower it if a card misbehaves on long wires
 const int BUTTON = 1;                              // D1
 const time_t VALID_AFTER = 1700000000;  // anything earlier means the clock was never set
+const uint32_t WATCHDOG_S = 10;         // restart if the loop stops for this long
+const uint32_t CARD_RETRY_MS = 60000;   // after a card failure, try the card again this often
+
+// The mic's gain, in the PDM's units: 0x28 is 0 dB, each step 0.5 dB. The library's default
+// (20, -10 dB) left quiet speech only a few steps of the ADPCM coder above its smallest step.
+const int PDM_GAIN = 0x28;
 
 // Sound detection, on 16 ms frames. Tune with the level= and floor= that `?` reports.
 const uint32_t FRAME = 512;                          // bytes: 256 samples
@@ -97,12 +110,17 @@ int16_t pcm[BLOCK_SAMPLES];  // one block being encoded
 
 enum State { PAUSED, LISTENING, RECORDING, FAILED };
 State state = PAUSED;
-SDLib::File wav;
+SdFat32 sd;
+File32 wav;
 Adpcm fileEnc;
-uint8_t out[16 * FILE_BLOCK];  // encoded blocks waiting for one SD write
+// Encoded audio waiting for the card. It goes out in writes that end on a sector boundary, so
+// the card gets whole sectors in one multi-sector write instead of a read-modify-write each.
+const uint32_t SECTOR = 512;
+const uint32_t WRITE_BYTES = 16 * SECTOR;
+alignas(4) uint8_t out[WRITE_BYTES + FILE_BLOCK];
 uint32_t outLen = 0, dataBytes = 0, samples = 0, sinceFlush = 0, notimeIndex = 0;
-char path[32];
-uint32_t feedbackUntil = 0, recordingSince = 0;
+char path[40];
+uint32_t feedbackUntil = 0, recordingSince = 0, failedAt = 0;
 bool sleeping = false;
 void noteRecording();  // for the screen's daily count
 const uint32_t SLEEP_HOLD_MS = 2000;
@@ -111,6 +129,7 @@ time_t clockBase = 0;  // the clock reads clockBase when millis() == clockMs
 uint32_t clockMs = 0;
 float vbat = 0;
 int batteryPct = -1;
+uint32_t resetReason = 0;
 
 // ---- audio in ----
 
@@ -165,15 +184,41 @@ void setClock(time_t t) {
   clockMs = millis();
 }
 
-void keepClock() {  // millis() wraps after 49 days: move the base along daily
+bool clockValid() { return clockNow() > VALID_AFTER; }
+
+// The clock survives a reset (the button, or the watchdog) in RAM that the startup code leaves
+// alone: it's saved every second, and a reset loses about a second. Not after a power cut or a
+// firmware upload (the bootloader runs in between, for who knows how long).
+struct KeptClock {
+  uint32_t magic, time, check;
+};
+KeptClock kept __attribute__((section(".noinit")));
+const uint32_t KEPT_MAGIC = 0x52454331;  // "REC1"
+
+void keepClock() {
   uint32_t secs = (millis() - clockMs) / 1000;
-  if (secs > 86400) {
+  if (secs > 86400) {  // millis() wraps after 49 days: move the base along daily
     clockBase += secs;
     clockMs += secs * 1000;
   }
+  static uint32_t savedAt = 0;
+  if (millis() - savedAt < 1000) return;
+  savedAt = millis();
+  if (!clockValid()) return;
+  kept.time = (uint32_t)clockNow();
+  kept.check = kept.time ^ KEPT_MAGIC;
+  kept.magic = KEPT_MAGIC;
 }
 
-bool clockValid() { return clockNow() > VALID_AFTER; }
+void restoreClock() {
+  const uint32_t resets = POWER_RESETREAS_DOG_Msk | POWER_RESETREAS_LOCKUP_Msk |
+                          POWER_RESETREAS_RESETPIN_Msk;
+  bool ok = kept.magic == KEPT_MAGIC && kept.check == (kept.time ^ KEPT_MAGIC);
+  if (ok && (resetReason & resets) && !(resetReason & POWER_RESETREAS_SREQ_Msk) &&
+      (time_t)kept.time > VALID_AFTER)
+    setClock((time_t)kept.time + 1);
+  kept.magic = 0;
+}
 
 void stamp(char* out, size_t size) {
   if (!clockValid()) {
@@ -208,31 +253,70 @@ void readBattery() {
   }
 }
 
-// ---- WAV files ----
+// ---- the card ----
 
-void put32(SDLib::File& f, uint32_t v) { f.write((uint8_t*)&v, 4); }
-void put16(SDLib::File& f, uint16_t v) { f.write((uint8_t*)&v, 2); }
+bool cardBegin() { return sd.begin(SdSpiConfig(SD_CS, DEDICATED_SPI, SD_SCK_MHZ(SD_MHZ))); }
+
+// Files get the recorder's time as their date (what a card reader shows).
+void fileTime(uint16_t* date, uint16_t* time) {
+  time_t t = clockValid() ? clockNow() : VALID_AFTER;
+  struct tm* g = gmtime(&t);
+  *date = FS_DATE(g->tm_year + 1900, g->tm_mon + 1, g->tm_mday);
+  *time = FS_TIME(g->tm_hour, g->tm_min, g->tm_sec);
+}
+
+// recorder-device.json at the card's root marks it as a recorder for `recorder sync` with a
+// card reader; written once, if it isn't there.
+void writeMarker() {
+  const char* name = "recorder-device.json";
+  if (sd.exists(name)) return;
+  uint8_t mac[6];
+  Bluefruit.getAddr(mac);
+  char text[48];
+  int n = snprintf(text, sizeof text, "{\"id\": \"recorder-%02x%02x\"}\n", mac[1], mac[0]);
+  File32 f = sd.open(name, O_WRONLY | O_CREAT | O_TRUNC);
+  if (!f) return;
+  f.write(text, n);
+  f.close();
+}
+
+// ---- WAV files ----
 
 const uint32_t HEADER_BYTES = 60;
 
-void writeHeader(SDLib::File& f) {
-  f.write((const uint8_t*)"RIFF", 4);
-  put32(f, HEADER_BYTES - 8 + dataBytes);
-  f.write((const uint8_t*)"WAVEfmt ", 8);
-  put32(f, 20);
-  put16(f, 0x11);  // IMA ADPCM
-  put16(f, 1);     // mono
-  put32(f, SAMPLE_RATE);
-  put32(f, SAMPLE_RATE * FILE_BLOCK / BLOCK_SAMPLES);
-  put16(f, FILE_BLOCK);
-  put16(f, 4);
-  put16(f, 2);
-  put16(f, BLOCK_SAMPLES);
-  f.write((const uint8_t*)"fact", 4);
-  put32(f, 4);
-  put32(f, samples);
-  f.write((const uint8_t*)"data", 4);
-  put32(f, dataBytes);
+void put32(uint8_t*& p, uint32_t v) {
+  memcpy(p, &v, 4);
+  p += 4;
+}
+void put16(uint8_t*& p, uint16_t v) {
+  memcpy(p, &v, 2);
+  p += 2;
+}
+void putTag(uint8_t*& p, const char* tag) {
+  memcpy(p, tag, 4);
+  p += 4;
+}
+
+void writeHeader(uint8_t* h) {
+  uint8_t* p = h;
+  putTag(p, "RIFF");
+  put32(p, HEADER_BYTES - 8 + dataBytes);
+  putTag(p, "WAVE");
+  putTag(p, "fmt ");
+  put32(p, 20);
+  put16(p, 0x11);  // IMA ADPCM
+  put16(p, 1);     // mono
+  put32(p, SAMPLE_RATE);
+  put32(p, SAMPLE_RATE * FILE_BLOCK / BLOCK_SAMPLES);
+  put16(p, FILE_BLOCK);
+  put16(p, 4);
+  put16(p, 2);
+  put16(p, BLOCK_SAMPLES);
+  putTag(p, "fact");
+  put32(p, 4);
+  put32(p, samples);
+  putTag(p, "data");
+  put32(p, dataBytes);
 }
 
 // The file for audio that started `back` seconds ago.
@@ -240,42 +324,49 @@ void nextPath(uint32_t back) {
   if (clockValid()) {
     time_t t = clockNow() - back;
     struct tm* g = gmtime(&t);
-    char dir[16];
-    snprintf(dir, sizeof(dir), "REC/%04d%02d%02d", (g->tm_year + 1900) % 10000, g->tm_mon + 1,
-             g->tm_mday);
-    SD.mkdir(dir);
-    snprintf(path, sizeof(path), "%s/%02d%02d%02d.WAV", dir, g->tm_hour, g->tm_min, g->tm_sec);
-    for (char c = 'A'; SD.exists(path) && c <= 'Z'; c++)  // same second again: 093000A.WAV
-      snprintf(path, sizeof(path), "%s/%02d%02d%02d%c.WAV", dir, g->tm_hour, g->tm_min,
-               g->tm_sec, c);
+    char dir[24];
+    snprintf(dir, sizeof(dir), "REC/%04d%02d%02d", (g->tm_year + 1900) % 10000,
+             (g->tm_mon + 1) % 100, g->tm_mday % 100);
+    sd.mkdir(dir);
+    snprintf(path, sizeof(path), "%s/%02d%02d%02d.WAV", dir, g->tm_hour % 100, g->tm_min % 100,
+             g->tm_sec % 100);
+    for (char c = 'A'; sd.exists(path) && c <= 'Z'; c++)  // same second again: 093000A.WAV
+      snprintf(path, sizeof(path), "%s/%02d%02d%02d%c.WAV", dir, g->tm_hour % 100,
+               g->tm_min % 100, g->tm_sec % 100, c);
     return;
   }
-  SD.mkdir("REC/NOTIME");
+  sd.mkdir("REC/NOTIME");
   do {
     snprintf(path, sizeof(path), "REC/NOTIME/%08lu.WAV", (unsigned long)++notimeIndex);
-  } while (SD.exists(path));
+  } while (sd.exists(path));
 }
 
 bool startFile() {
   nextPath((scan - tail) / BYTES_PER_SEC);  // what's still buffered started that long ago
   outLen = dataBytes = samples = sinceFlush = soundFrames = 0;
-  SDLib::File f = SD.open(path, FILE_WRITE);
-  if (!f) return false;
-  writeHeader(f);
-  f.close();
-  wav = SD.open(path, O_READ | O_WRITE);  // not FILE_WRITE: that appends, and we rewrite the header
-  if (!wav) return false;
-  wav.seek(HEADER_BYTES);
+  if (!wav.open(path, O_RDWR | O_CREAT | O_TRUNC)) return false;
+  uint8_t h[HEADER_BYTES];
+  writeHeader(h);
+  return wav.write(h, HEADER_BYTES) == HEADER_BYTES;
+}
+
+// Sends the waiting audio to the card: up to the last whole sector, or (`all`) everything.
+bool writeOut(bool all) {
+  uint32_t at = HEADER_BYTES + dataBytes - outLen;  // where out[0] goes in the file
+  uint32_t n = all ? outLen : (at + outLen) / SECTOR * SECTOR - at;
+  if (n == 0 || n > outLen) return true;
+  if (wav.write(out, n) != n) return false;
+  outLen -= n;
+  memmove(out, out + n, outLen);
   return true;
 }
 
 bool saveHeader() {
-  if (outLen && wav.write(out, outLen) != outLen) return false;
-  outLen = 0;
-  wav.seek(0);
-  writeHeader(wav);
-  wav.seek(HEADER_BYTES + dataBytes);
-  wav.flush();
+  if (!writeOut(true)) return false;
+  uint8_t h[HEADER_BYTES];
+  writeHeader(h);
+  if (!wav.seekSet(0) || wav.write(h, HEADER_BYTES) != HEADER_BYTES) return false;
+  if (!wav.seekSet(HEADER_BYTES + dataBytes) || !wav.sync()) return false;
   sinceFlush = 0;
   return true;
 }
@@ -283,7 +374,7 @@ bool saveHeader() {
 bool finishFile() {
   if (!wav) return true;
   bool ok = saveHeader();
-  wav.close();
+  ok = wav.close() && ok;
   return ok;
 }
 
@@ -294,10 +385,7 @@ bool encodeBlock() {
   dataBytes += FILE_BLOCK;
   samples += BLOCK_SAMPLES;
   sinceFlush += BLOCK_SAMPLES;
-  if (outLen == sizeof(out)) {
-    if (wav.write(out, outLen) != outLen) return false;
-    outLen = 0;
-  }
+  if (outLen >= WRITE_BYTES && !writeOut(false)) return false;
   if (sinceFlush >= FLUSH_SAMPLES && !saveHeader()) return false;
   if (samples >= CHUNK_SAMPLES) return finishFile() && startFile();
   return true;
@@ -324,8 +412,13 @@ bool drainAndFinish(uint32_t end) {
 
 void fail() {
   PDM.end();
-  if (wav) wav.close();
+  if (wav) {
+    bool empty = dataBytes == 0;
+    wav.close();
+    if (empty) sd.remove(path);  // a full card: don't leave a file per attempt
+  }
   state = FAILED;
+  failedAt = millis();
 }
 
 void startListening() {
@@ -333,6 +426,7 @@ void startListening() {
   recent = 0;
   noiseFloor = 0;  // learn the room again
   if (!PDM.begin(1, SAMPLE_RATE)) return fail();
+  PDM.setGain(PDM_GAIN);
   state = LISTENING;
 }
 
@@ -356,25 +450,51 @@ void startSegment() {
 void endSegment() {
   bool keep = soundFrames >= MIN_SOUND_FRAMES;
   if (!drainAndFinish(scan)) return fail();  // the rest is the next pre-roll
-  if (!keep) SD.remove(path);
+  if (!keep) sd.remove(path);
   else noteRecording();
   recent = 0;
   state = LISTENING;
 }
 
+// After a failure: the card again (taken out and put back, or a one-off error), then listening.
+bool retryCard() {
+  sd.end();
+  if (!cardBegin()) {
+    failedAt = millis();
+    return false;
+  }
+  startListening();
+  return state != FAILED;
+}
+
 void onPress() {
   if (state == LISTENING || state == RECORDING) {
     pauseListening();
+  } else if (state == FAILED) {
+    retryCard();  // card back in? start over
   } else {
-    if (state == FAILED) {  // card back in? start over
-      SD.end();
-      if (!SD.begin(SD_CS)) return;
-    }
     startListening();
   }
   feedbackOn = state != PAUSED;
   feedbackUntil = millis() + 600;
 }
+
+// ---- watchdog ----
+// Restarts the recorder if the loop stops being called (a card or radio that never answers).
+// It can't be stopped once started, not even by a reset other than a power cut; the bootloader
+// keeps it fed while it waits for an upload.
+
+void startWatchdog() {
+  if (!(NRF_WDT->RUNSTATUS & 1)) {
+    NRF_WDT->CONFIG = (WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos) |
+                      (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos);
+    NRF_WDT->CRV = 32768 * WATCHDOG_S - 1;
+    NRF_WDT->RREN = WDT_RREN_RR0_Msk;
+    NRF_WDT->TASKS_START = 1;
+  }
+}
+
+void feedWatchdog() { NRF_WDT->RR[0] = WDT_RR_RR_Reload; }
 
 // ---- Bluetooth ----
 // Service 7f1e0001-5a1b-4c8e-9d2f-3b6a0c4e8d10 with three characteristics:
@@ -394,6 +514,13 @@ BLEService service(UUID_SERVICE);
 BLECharacteristic ctrlChr(UUID_CTRL), dataChr(UUID_DATA), liveChr(UUID_LIVE);
 uint16_t connHandle = BLE_CONN_HANDLE_INVALID;
 uint16_t mtu = 23;
+volatile uint32_t links = 0;  // connections so far: a transfer belongs to one of them
+bool bleOk = false;
+// Notifications the radio can hold: with 3 it sends at most 3 packets per connection event and
+// then waits for the loop to queue more. 16 lets it fill the event. (If the SoftDevice can't
+// fit that in its RAM, setupBle falls back to the usual 3.)
+const uint8_t TX_QUEUE = 16;
+uint8_t txQueue = 0;
 
 // Commands written over Bluetooth arrive in the Bluetooth task; the loop runs them.
 char bleCmds[4][64];
@@ -414,7 +541,8 @@ class BleLines : public Print {
  public:
   size_t write(uint8_t c) override {
     if (c == '\n') {
-      for (int i = 0; i < 5 && Bluefruit.connected() && !ctrlChr.notify(buf, len); i++) delay(5);
+      // notify() waits up to 100 ms for room in the queue, which a transfer may have filled
+      for (int i = 0; i < 10 && Bluefruit.connected() && !ctrlChr.notify(buf, len); i++) delay(5);
       len = 0;
     } else if (c != '\r' && len < sizeof(buf)) {
       buf[len++] = c;
@@ -431,9 +559,14 @@ BleLines bleLines;
 // A transfer runs a little at a time from the loop, between the audio work.
 enum Job { NO_JOB, LIST_JOB, GET_JOB };
 Job job = NO_JOB;
-SDLib::File jobDir, jobSub, jobFile;
-char jobSubName[13];
-uint32_t jobOff = 0;
+uint32_t jobLink = 0;
+File32 jobDir, jobSub, jobFile;
+char jobSubName[16];
+uint32_t jobOff = 0;  // file offset of the next packet
+// A download reads the card in large pieces (one multi-sector read) and sends them as packets.
+alignas(4) uint8_t jobBuf[8 * SECTOR];
+uint32_t jobBufLen = 0, jobBufAt = 0;
+bool jobEnd = false;
 uint8_t pkt[244];
 uint16_t pktLen = 0;  // a DATA packet waiting to go out
 bool liveOn = false;
@@ -448,33 +581,50 @@ void endJob() {
   pktLen = 0;
 }
 
-bool isOpenFile(const char* p) { return state == RECORDING && strcmp(p, path) == 0; }
+bool isOpenFile(const char* p) { return state == RECORDING && strcasecmp(p, path) == 0; }
+
+// The next piece of the file being sent, read so that it ends on a sector boundary.
+bool fillJobBuf() {
+  uint32_t left = jobBufLen - jobBufAt;
+  memmove(jobBuf, jobBuf + jobBufAt, left);
+  jobBufLen = left;
+  jobBufAt = 0;
+  uint32_t at = jobOff + left;  // file offset of the first byte to read
+  uint32_t want = sizeof(jobBuf) - left;
+  if (want > SECTOR) want -= (at + want) % SECTOR;
+  int n = jobFile.read(jobBuf + left, want);
+  if (n < 0) return false;
+  if ((uint32_t)n < want) jobEnd = true;
+  jobBufLen += n;
+  return true;
+}
 
 // One step of a transfer; false when Bluetooth is busy and the loop should move on.
 bool stepJob() {
   if (job == LIST_JOB) {
     if (!jobSub) {
-      SDLib::File e = jobDir.openNextFile();
+      File32 e = jobDir.openNextFile();
       if (!e) {
         bleLines.println("END");
         endJob();
-      } else if (e.isDirectory()) {
-        strncpy(jobSubName, e.name(), sizeof(jobSubName) - 1);
+      } else if (e.isDir() && !e.isHidden()) {
+        e.getName(jobSubName, sizeof(jobSubName));
         jobSub = e;
       } else {
         e.close();
       }
       return true;
     }
-    SDLib::File f = jobSub.openNextFile();
+    File32 f = jobSub.openNextFile();
     if (!f) {
       jobSub.close();
       return true;
     }
-    char p[40];
-    snprintf(p, sizeof(p), "REC/%s/%s", jobSubName, f.name());
-    bool file = !f.isDirectory();
-    uint32_t size = f.size();
+    char name[16], p[48];
+    f.getName(name, sizeof(name));
+    snprintf(p, sizeof(p), "REC/%s/%s", jobSubName, name);
+    bool file = !f.isDir() && !f.isHidden() && name[0] != '.';
+    uint32_t size = f.fileSize();
     f.close();
     if (file && !isOpenFile(p)) {  // the file being recorded comes next time
       bleLines.print("F ");
@@ -486,14 +636,22 @@ bool stepJob() {
   }
   if (job == GET_JOB) {
     if (pktLen == 0) {
-      int n = jobFile.read(pkt + 4, min(mtu - 7, 240));
-      if (n <= 0) {
+      uint32_t room = min(mtu - 7, 240);
+      if (jobBufLen - jobBufAt < room && !jobEnd && !fillJobBuf()) {
+        bleLines.println("ERR read failed");
+        endJob();
+        return true;
+      }
+      uint32_t n = min(room, jobBufLen - jobBufAt);
+      if (n == 0) {
         bleLines.print("DONE ");
         bleLines.println(jobOff);
         endJob();
         return true;
       }
       memcpy(pkt, &jobOff, 4);
+      memcpy(pkt + 4, jobBuf + jobBufAt, n);
+      jobBufAt += n;
       pktLen = 4 + n;
       jobOff += n;
     }
@@ -528,27 +686,62 @@ bool stepLive() {
   return true;
 }
 
-void onConnect(uint16_t conn) {
-  connHandle = conn;
-  BLEConnection* c = Bluefruit.Connection(conn);
-  c->requestPHY();
-  c->requestDataLengthUpdate();
-  c->requestMtuExchange(247);
-  // Windows picks 30 ms otherwise, and three packets go out per interval: 24 KB/s. Ask for 7.5 ms
-  // (the computer may settle on 15): more packets per second, for transfers and live audio.
-  c->requestConnectionParameter(6);
+// The connection interval: 7.5 ms while sending (more packets per second) and 100-200 ms when
+// idle for a while, which costs the radio far less while `recorder ui` stays connected.
+const uint32_t RELAX_AFTER_MS = 15000;
+bool linkRelaxed = false;
+uint32_t linkBusyAt = 0;
+
+void requestInterval(bool fast) {
+  if (fast) {
+    // Windows picks 30 ms otherwise, and three packets go out per interval: 24 KB/s. Ask for 7.5
+    // ms (the computer may settle on 15): more packets per second, for transfers and live audio.
+    Bluefruit.Connection(connHandle)->requestConnectionParameter(6);
+  } else {
+    ble_gap_conn_params_t p = {80, 160, 0, 400};  // 100-200 ms (1.25 ms units), 4 s timeout
+    sd_ble_gap_conn_param_update(connHandle, &p);
+  }
+  linkRelaxed = !fast;
 }
 
+void tuneLink() {
+  if (connHandle == BLE_CONN_HANDLE_INVALID || !Bluefruit.Connection(connHandle)) return;
+  bool busy = job != NO_JOB || liveOn;
+  if (busy) linkBusyAt = millis();
+  if (busy && linkRelaxed) requestInterval(true);
+  if (!busy && !linkRelaxed && millis() - linkBusyAt > RELAX_AFTER_MS) requestInterval(false);
+}
+
+void onConnect(uint16_t conn) {
+  connHandle = conn;
+  links++;
+  linkBusyAt = millis();
+  BLEConnection* c = Bluefruit.Connection(conn);
+  c->requestPHY(BLE_GAP_PHY_2MBPS);
+  c->requestDataLengthUpdate();
+  c->requestMtuExchange(247);
+  requestInterval(true);
+}
+
+// In the Bluetooth task: the loop notices (by `links` and connHandle) and ends what was running.
 void onDisconnect(uint16_t, uint8_t) {
   connHandle = BLE_CONN_HANDLE_INVALID;
-  liveOn = false;
-  endJob();
   mtu = 23;
 }
 
 void setupBle() {
-  Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
-  Bluefruit.begin();
+  const uint8_t queues[] = {TX_QUEUE, 3};
+  for (uint8_t q : queues) {
+    Bluefruit.configPrphConn(247, 100, q, BLE_GATTC_WRITE_CMD_TX_QUEUE_SIZE_DEFAULT);
+    if (Bluefruit.begin()) {
+      txQueue = q;
+      break;
+    }
+    sd_softdevice_disable();  // its RAM is too small for that queue: try again with less
+  }
+  if (!txQueue) return;  // no Bluetooth; recording works without it
+  bleOk = true;
+  sd_power_dcdc_mode_set(NRF_POWER_DCDC_ENABLE);  // the XIAO has the DC/DC's inductor: ~40% less current
   Bluefruit.autoConnLed(false);  // the LED is ours
   Bluefruit.setName("Recorder");
   Bluefruit.Periph.setConnectCallback(onConnect);
@@ -742,7 +935,7 @@ void updateScreen() {
   bool hello = (int32_t)(helloUntil - millis()) > 0;
   if (screenShowing && millis() - screenDrawnAt < (hello ? 40u : 100u)) return;
   screenDrawnAt = millis();
-  char line[24];
+  char line[32];
   screen.clearDisplay();
   screen.setTextColor(SSD1306_WHITE);
   if (hello) {
@@ -816,19 +1009,23 @@ void updateScreen() {
 void goToSleep() {
   if (state == LISTENING || state == RECORDING) pauseListening();  // closes the file
   playGoodnight();  // three slow blinks, and the moon on the screen
-  job = NO_JOB;
+  endJob();
   liveOn = false;
-  Bluefruit.Advertising.restartOnDisconnect(false);
-  if (connHandle != BLE_CONN_HANDLE_INVALID) Bluefruit.disconnect(connHandle);
-  Bluefruit.Advertising.stop();
+  if (bleOk) {
+    Bluefruit.Advertising.restartOnDisconnect(false);
+    if (connHandle != BLE_CONN_HANDLE_INVALID) Bluefruit.disconnect(connHandle);
+    Bluefruit.Advertising.stop();
+  }
   screenUntil = millis();
   sleeping = true;
 }
 
 void wakeUp() {
   sleeping = false;
-  Bluefruit.Advertising.restartOnDisconnect(true);
-  Bluefruit.Advertising.start(0);
+  if (bleOk) {
+    Bluefruit.Advertising.restartOnDisconnect(true);
+    Bluefruit.Advertising.start(0);
+  }
   readBattery();
   onPress();  // starts listening (or retries the card), with the usual LED feedback
   if (haveScreen) {
@@ -895,16 +1092,25 @@ void updateLed() {
   if (LED_BLUE != LED_BUILTIN) digitalWrite(LED_BLUE, on && blue ? LOW : HIGH);
 }
 
+const char* resetName() {
+  if (resetReason & POWER_RESETREAS_DOG_Msk) return "watchdog";
+  if (resetReason & POWER_RESETREAS_LOCKUP_Msk) return "lockup";
+  if (resetReason & POWER_RESETREAS_SREQ_Msk) return "soft";
+  if (resetReason & POWER_RESETREAS_RESETPIN_Msk) return "button";
+  return "power";
+}
+
 // One line per command, over USB serial or Bluetooth (src/recorder/clock.py, ble.py):
-//   ?           -> RECORDER 3 <20261020T093000|unset> <LISTEN|REC|PAUSED|FAILED> <file|->
+//   ?           -> RECORDER 4 <20261020T093000|unset> <LISTEN|REC|PAUSED|FAILED> <file|->
 //                  dropped=<n> level=<now> floor=<noise floor> bat=<volts> pct=<percent>
-//                  screen=<ok|none|nolib>
+//                  screen=<ok|none|nolib> up=<seconds> reset=<power|button|watchdog|...>
+//                  txq=<notification queue> ci=<connection interval, ms>
 //   T<seconds>  -> OK 20261020T093000   (local wall-clock time, counted as if it were UTC)
 // Bluetooth only:
 //   L                -> F <path> <size> per finished file, then END
 //   G<offset> <path> -> the file from <offset> on DATA, then DONE <size>  (or ERR ...)
 //   X                -> stops a listing or download: STOPPED
-//   D<path>          -> OK, or ERR ...
+//   D<path>          -> OK, or ERR ...  (an emptied date folder goes too)
 //   S1 / S0          -> OK; live audio on LIVE starts / stops
 void command(const char* line, Print& out, bool ble) {
   char stampNow[20];
@@ -926,7 +1132,7 @@ void command(const char* line, Print& out, bool ble) {
     readBattery();
     stamp(stampNow, sizeof(stampNow));
     const char* names[] = {"PAUSED", "LISTEN", "REC", "FAILED"};
-    out.print("RECORDER 3 ");
+    out.print("RECORDER 4 ");
     out.print(stampNow);
     out.print(" ");
     out.print(names[state]);
@@ -944,10 +1150,19 @@ void command(const char* line, Print& out, bool ble) {
     out.print(batteryPct);
     out.print(" screen=");  // ok, none (not found at power-on) or nolib (library not installed)
 #ifdef HAVE_SCREEN_LIB
-    out.println(haveScreen ? "ok" : "none");
+    out.print(haveScreen ? "ok" : "none");
 #else
-    out.println("nolib");
+    out.print("nolib");
 #endif
+    out.print(" up=");
+    out.print(millis() / 1000);
+    out.print(" reset=");
+    out.print(resetName());
+    out.print(" txq=");
+    out.print(txQueue);
+    BLEConnection* c = connHandle != BLE_CONN_HANDLE_INVALID ? Bluefruit.Connection(connHandle) : NULL;
+    out.print(" ci=");
+    out.println(c ? c->getConnectionInterval() * 1.25f : 0, 1);
   } else if (!ble) {
     out.println("ERR bluetooth only");
   } else if (line[0] == 'X') {
@@ -956,12 +1171,13 @@ void command(const char* line, Print& out, bool ble) {
   } else if (job != NO_JOB) {
     out.println("ERR busy");
   } else if (line[0] == 'L') {
-    jobDir = SD.open("REC");
+    jobDir = sd.open("REC");
     if (!jobDir) {
       out.println("END");
       return;
     }
     job = LIST_JOB;
+    jobLink = links;
   } else if (line[0] == 'G') {
     char* rest;
     uint32_t off = strtoul(line + 1, &rest, 10);
@@ -970,19 +1186,32 @@ void command(const char* line, Print& out, bool ble) {
       out.println("ERR recording");
       return;
     }
-    jobFile = SD.open(rest, FILE_READ);
-    if (!jobFile || !jobFile.seek(off)) {
+    jobFile = sd.open(rest, O_RDONLY);
+    if (!jobFile || jobFile.isDir() || off > jobFile.fileSize() || !jobFile.seekSet(off)) {
       if (jobFile) jobFile.close();
       out.println("ERR no such file");
       return;
     }
     jobOff = off;
+    jobBufLen = jobBufAt = 0;
+    jobEnd = false;
     job = GET_JOB;
+    jobLink = links;
   } else if (line[0] == 'D') {
-    if (isOpenFile(line + 1)) {
+    const char* p = line + 1;
+    if (isOpenFile(p)) {
       out.println("ERR recording");
+    } else if (!sd.remove(p)) {
+      out.println("ERR not removed");
     } else {
-      out.println(SD.remove(line + 1) ? "OK" : "ERR not removed");
+      char dir[32];
+      const char* slash = strrchr(p, '/');
+      if (slash && slash - p < (int)sizeof(dir)) {
+        memcpy(dir, p, slash - p);
+        dir[slash - p] = 0;
+        if (strcasecmp(dir, "REC") != 0) sd.rmdir(dir);  // only goes if it's empty now
+      }
+      out.println("OK");
     }
   } else if (line[0] == 'S') {
     liveOn = line[1] == '1';
@@ -1011,17 +1240,29 @@ void handleSerial() {
 }
 
 void handleBle() {
+  if (!bleOk) return;
+  // A transfer or live stream of a connection that has ended (or been replaced) stops here,
+  // not in the disconnect callback: that runs in the Bluetooth task, maybe mid-read of the card.
+  bool linked = connHandle != BLE_CONN_HANDLE_INVALID;
+  if (job != NO_JOB && (!linked || jobLink != links)) endJob();
+  if (!linked) {
+    liveOn = false;
+    linkRelaxed = false;
+  }
   while (bleDone != bleIn) {
     command(bleCmds[bleDone % 4], bleLines, true);
     bleDone++;
   }
-  if (connHandle != BLE_CONN_HANDLE_INVALID) {
+  if (linked) {
     BLEConnection* c = Bluefruit.Connection(connHandle);
     if (c) mtu = c->getMtu();
+    tuneLink();
   }
 }
 
 void setup() {
+  resetReason = readResetReason();
+  startWatchdog();
   Serial.begin(115200);  // doesn't wait for the computer: on battery there is none
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(LED_BLUE, OUTPUT);
@@ -1032,21 +1273,30 @@ void setup() {
   digitalWrite(VBAT_ENABLE, LOW);
   pinMode(PIN_CHARGING_CURRENT, OUTPUT);
   digitalWrite(PIN_CHARGING_CURRENT, LOW);  // charge at 100 mA
+#ifdef PIN_LSM6DS3TR_C_POWER
+  pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);  // the motion sensor isn't used: unpowered
+  digitalWrite(PIN_LSM6DS3TR_C_POWER, LOW);
+#endif
   analogReference(AR_INTERNAL_3_0);
   analogReadResolution(12);
+  restoreClock();
   setupBle();
   readBattery();
   setupScreen();
+  FsDateTime::setCallback(fileTime);
   PDM.onReceive(onPDMdata);
-  if (!SD.begin(SD_CS)) {
+  if (!cardBegin()) {
     state = FAILED;
+    failedAt = millis();
     return;
   }
+  writeMarker();
   startListening();
 }
 
 void loop() {
   static uint32_t batteryAt = 0;
+  feedWatchdog();
   if (sleeping) {
     handleSerial();
     handleButton();
@@ -1067,6 +1317,7 @@ void loop() {
     batteryAt = millis();
     readBattery();
   }
+  if (state == FAILED && millis() - failedAt > CARD_RETRY_MS) retryCard();
   while ((state == LISTENING || state == RECORDING) && head - scan >= FRAME) {
     bool sound = soundFrame();
     recent = (recent << 1) | sound;
@@ -1081,11 +1332,15 @@ void loop() {
     }
   }
   bool busy = false;
-  if (state == RECORDING && scan - tail >= BLOCK_PCM) {  // writes never pass detection
+  // All the audio that's ready (writes never pass detection), so a stall elsewhere is made up.
+  for (int i = 0; i < 16 && state == RECORDING && scan - tail >= BLOCK_PCM; i++) {
     if (!writeBlock(BLOCK_PCM)) fail();
     busy = true;
   }
   for (int i = 0; i < 8 && stepLive(); i++) busy = true;
-  for (int i = 0; i < 16 && job != NO_JOB && stepJob(); i++) busy = true;
+  // Transfers get about 20 ms a turn: notify() waits whenever the radio's queue is full, and the
+  // audio mustn't wait behind it for long.
+  uint32_t start = millis();
+  while (job != NO_JOB && millis() - start < 20 && stepJob()) busy = true;
   if (!busy) delay(10);  // lets the CPU sleep between blocks
 }
