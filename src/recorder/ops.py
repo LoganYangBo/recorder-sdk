@@ -80,6 +80,9 @@ def relabel(
             store.set_speakers(rid, segs)
 
 
+ALIGN_PAD = 1.5  # seconds of audio either side of a segment when aligning it
+
+
 def align_segment(store: Store, aligner, audio, seg_id: int, s0: float, s1: float, lock=None):
     """Force-align one segment's words (`audio`: the whole recording, 16 kHz)
     and store their times; returns {word_id: (start, end)} for the words
@@ -87,8 +90,9 @@ def align_segment(store: Store, aligner, audio, seg_id: int, s0: float, s1: floa
     from .align import refine
     from .speaker import SAMPLE_RATE
 
-    # a little extra audio either side, in case the segment cuts a word
-    a0, a1 = max(0.0, s0 - 0.3), min(len(audio) / SAMPLE_RATE, s1 + 0.3)
+    # Whisper's segment times can be off too: take more audio either side
+    # (the aligner skips speech that isn't the segment's)
+    a0, a1 = max(0.0, s0 - ALIGN_PAD), min(len(audio) / SAMPLE_RATE, s1 + ALIGN_PAD)
     seg_words = store.segment_words(seg_id)
     try:
         with lock or contextlib.nullcontext():
@@ -97,7 +101,7 @@ def align_segment(store: Store, aligner, audio, seg_id: int, s0: float, s1: floa
                 [w.word for w in seg_words],
             )
         found = [(a0 + t[0], a0 + t[1]) if t else None for t in found]
-        times = refine([(w.start, w.end) for w in seg_words], found)
+        times = refine(found)
     except Exception:  # e.g. more letters than audio frames: keep Whisper's times
         times = [None] * len(seg_words)
     store.set_word_times({w.id: t for w, t in zip(seg_words, times)})

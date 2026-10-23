@@ -139,6 +139,11 @@ MIGRATIONS = [
         version       INTEGER NOT NULL
     );
     """,
+    """
+    -- aligned times far from Whisper's used to be rejected, but it's Whisper's that were off:
+    -- align those words again
+    UPDATE words SET aligned = 0 WHERE aligned = -1;
+    """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
