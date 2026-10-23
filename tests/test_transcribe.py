@@ -58,7 +58,7 @@ def test_whisper_passes_options_and_keeps_words(monkeypatch):
 
 
 def test_long_audio_is_batched_with_vocab_hotwords(monkeypatch):
-    import faster_whisper
+    import types
 
     calls = {}
 
@@ -73,7 +73,9 @@ def test_long_audio_is_batched_with_vocab_hotwords(monkeypatch):
             calls.update(kw)
             return iter([]), Info()
 
-    monkeypatch.setattr(faster_whisper, "BatchedInferencePipeline", FakeBatched)
+    fake_module = types.ModuleType("faster_whisper")  # CI runs without faster-whisper
+    fake_module.BatchedInferencePipeline = FakeBatched
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_module)
     vocab = ["Mia"]
     t = transcribe.WhisperTranscriber(hotwords="PyTorch", vocab=lambda: " ".join(vocab))
     t._model = object()
