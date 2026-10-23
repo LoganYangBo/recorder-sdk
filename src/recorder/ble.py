@@ -206,10 +206,15 @@ class BleRecorder:
 
 
 async def download_new(
-    rec: BleRecorder, inbox: Path, log: Callable[[str], None] = lambda msg: None
+    rec: BleRecorder,
+    inbox: Path,
+    log: Callable[[str], None] = lambda msg: None,
+    on_file: Callable[[str, Path], None] | None = None,
 ) -> list[tuple[str, Path]]:
     """Fetch every finished recording not already in `inbox` (kept as on the card:
-    inbox/REC/20261020/093000.WAV); returns (card path, local path) of all the card's files."""
+    inbox/REC/20261020/093000.WAV); returns (card path, local path) of all the card's files.
+    `on_file(card path, local path)` is called as each file is in, so it can be processed
+    while the next one downloads."""
     files = await rec.list_files()
     out = []
     for path, size in files:
@@ -218,6 +223,8 @@ async def download_new(
             log(f"downloading {path} ({size // 1024} KB)")
             await rec.fetch(path, size, dest)
         out.append((path, dest))
+        if on_file:
+            on_file(path, dest)
     return out
 
 

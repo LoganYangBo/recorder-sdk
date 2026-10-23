@@ -176,6 +176,15 @@ mark { background: var(--play); color: inherit; padding: 0 1px; }
 .title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .title-row h2 { margin: 0; }
 .title-row .file { color: var(--muted); font-size: 12px; }
+.title-row .export { margin-left: auto; color: var(--muted); font-size: 12px; }
+.title-row .export a { color: var(--accent, inherit); margin-left: 4px; }
+.reason { display: flex; gap: 6px; align-items: center; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.reason button.on { font-weight: 600; outline: 1px solid currentColor; }
+.vocab { padding: 16px 20px 60px; }
+.vocab .terms { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 20px; }
+.vocab .term { border: 1px solid var(--line); border-radius: 14px; padding: 3px 6px 3px 10px; display: inline-flex; gap: 6px; align-items: center; }
+.vocab .term small { color: var(--muted); }
+.vocab textarea { width: 100%; min-height: 110px; font: inherit; box-sizing: border-box; }
 .when { color: var(--muted); font-size: 13px; margin: -4px 0 8px; display: flex; gap: 8px; align-items: center; }
 .when .muted { color: var(--muted); }
 .day { padding: 10px 14px 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
@@ -230,6 +239,7 @@ button.rec-btn::before { content: "●"; margin-right: 5px; }
   <button class="rec-btn" id="liveBtn" data-i18n="live"></button>
   <button id="devBtn" data-i18n="device"></button>
   <button id="openNotes" data-i18n="notes"></button>
+  <button id="openVocab" data-i18n="vocab"></button>
   <button id="openSpk" data-i18n="speakers"></button>
   <button class="link" id="langBtn"></button>
 </header>
@@ -372,6 +382,15 @@ const STRINGS = {
     devLiveHint: "Transcribes what the recorder hears as it happens, just to watch: nothing is saved here. The recorder keeps recording to its card, and that copy comes in full when you sync.",
     devLiveStart: "Start", devNoBleak: "Bluetooth needs bleak: pip install \"recorder[device]\"",
     devLevel: "level {v} · noise floor {f}",
+    vocab: "Vocab", exportAs: "Export:",
+    vocabHint: "Names and jargon Whisper should spell right (people, products, places, work terms). They are given to Whisper for every new transcription; the newest that fit in its prompt are used. Enrolled people's names and words you correct as “misheard” are added on their own.",
+    vocabAddPh: "Add a name or term, e.g. Mia, su7, Kubernetes", add: "Add", vocabEmpty: "No terms yet",
+    vocabPasteTitle: "Pick them out of a document", vocabPastePh: "Paste meeting notes, a contact list, project docs…",
+    vocabFind: "Find names and terms", vocabAddAll: "Add all {n}", vocabNoneFound: "Nothing new found",
+    vocabAdded: "Added {n}", vocabAdded1: "Added 1", vocabRemoved: "Removed “{w}”",
+    vocabSources: { manual: "added", voiceprint: "voiceprint", correction: "correction", import: "document" },
+    reasonQ: "Whose mistake?", misheard: "Whisper misheard", mispronounced: "I mispronounced",
+    reasonSaved: "Saved", reasonTag: { misheard: "misheard", mispronounced: "mispronounced" },
   },
   zh: {
     searchPh: "搜索全部转写…", import: "导入", live: "实时录音", notes: "纠错本",
@@ -454,6 +473,15 @@ const STRINGS = {
     devLiveHint: "录音设备听到什么就实时转成文字，只用来看，这里不另存。设备照常往卡上录，同步后就有完整的录音。",
     devLiveStart: "开始", devNoBleak: "蓝牙需要 bleak：pip install \"recorder[device]\"",
     devLevel: "音量 {v} · 底噪 {f}",
+    vocab: "词表", exportAs: "导出：",
+    vocabHint: "希望 Whisper 写对的人名和术语（人、产品、地名、工作用语）。每次新转写都会交给 Whisper，放不下时用最新的那些。录入声纹的人名、纠错时选“识别错了”的词会自动加进来。",
+    vocabAddPh: "加一个名字或术语，比如 Mia、su7、Kubernetes", add: "添加", vocabEmpty: "还没有词",
+    vocabPasteTitle: "从文档里挑出来", vocabPastePh: "粘贴会议纪要、通讯录、项目文档…",
+    vocabFind: "找出人名和术语", vocabAddAll: "全部加入（{n} 个）", vocabNoneFound: "没有找到新的",
+    vocabAdded: "已加入 {n} 个", vocabRemoved: "已删除“{w}”",
+    vocabSources: { manual: "手动", voiceprint: "声纹", correction: "纠错", import: "文档" },
+    reasonQ: "是谁的问题？", misheard: "识别错了", mispronounced: "我发音不准",
+    reasonSaved: "已记录", reasonTag: { misheard: "识别错", mispronounced: "发音错" },
   },
 };
 const LANG = (l => l in STRINGS ? l : (navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en")(localGet("lang", ""));
@@ -608,6 +636,8 @@ function renderRec() {
         ${r.title ? `<span class="file">${esc(r.file)}</span>` : ""}
         <button class="link" id="renameBtn">${t("rename")}</button>
         <button class="link danger" id="deleteBtn">${t("delete")}</button>
+        <span class="export">${t("exportAs")}
+          ${["md", "srt", "txt"].map(f => `<a class="link" href="/api/recordings/${r.id}/export.${f}" download>${f}</a>`).join(" ")}</span>
       </div>
       <div class="when" id="whenRow">${r.started_at
         ? `${esc(dayLabel(startDate(r)))} ${clock(r, 0)} – ${clock(r, r.duration)}`
@@ -1063,12 +1093,32 @@ function compareHtml(c) {
       : t("noIpa")}</div>`;
 }
 
+function reasonHtml(c) {
+  // only the wearer's own words can be either; someone else's are always "misheard"
+  if (c.heard === c.chosen || c.speaker !== "me" || !c.word_id) return "";
+  return `<div class="reason">${t("reasonQ")}
+    ${["misheard", "mispronounced"].map(r => `<button class="link ${c.reason === r ? "on" : ""}" data-reason="${r}" data-wid="${c.word_id}" data-w="${esc(c.word || c.chosen)}">${t(r)}</button>`).join("")}</div>`;
+}
+
+function bindReason(root, after) {
+  root.querySelectorAll("[data-reason]").forEach(b => b.onclick = async () => {
+    const word = b.dataset.w.replace(/^[^\w']+|[^\w']+$/g, "");
+    try { await api(`/api/words/${b.dataset.wid}/correct`, { method: "POST", body: { word, reason: b.dataset.reason } }); }
+    catch (e) { toast(t("error", { msg: e.message })); return; }
+    b.parentElement.querySelectorAll("[data-reason]").forEach(x => x.classList.toggle("on", x === b));
+    toast(t("reasonSaved"));
+    after?.();
+  });
+}
+
 function showCompare(el, c, clip) {
   if (!pop) { pop = document.createElement("div"); pop.className = "pop"; document.body.appendChild(pop); }
   pop.innerHTML = `<div class="h"><b>${t("compareTitle")}</b><button class="link" id="popClose">${t("close")}</button></div>${compareHtml(c)}
+    ${reasonHtml(c)}
     <div class="row"><button class="link" id="popRedo">${t("repick")}</button></div>`;
   placePop(el);
   bindPlay(clip);
+  bindReason(pop);
   $("#popClose").onclick = closePop;
   $("#popRedo").onclick = () => openWordPop(el, true);
 }
@@ -1148,12 +1198,55 @@ async function showNotes() {
           ${c.recording_id ? `<button class="play" data-word="${c.word_id}">${t("playOrig")}</button>
           <button class="link" data-goto="${c.recording_id}" data-t="${c.start}">${t("gotoText")}</button>` : ""}
         </div>
-        <div class="meta">${esc(c.sentence)} · ${esc(c.recording || t("recDeleted"))} ${fmt(c.start)} · ${esc(c.speaker || "")} · ${esc(c.created_at)}</div>
+        <div class="meta">${esc(c.sentence)} · ${esc(c.recording || t("recDeleted"))} ${fmt(c.start)} · ${esc(c.speaker || "")} · ${esc(c.created_at)}
+          ${c.reason && c.speaker !== "me" ? ` · ${t("reasonTag")[c.reason]}` : ""}</div>
+        ${c.recording_id ? reasonHtml({ ...c, word: c.shown || c.chosen }) : ""}
       </div>`;
     }).join("") : `<div class="empty">${t("noNotes")}</div>`}</div>`;
   $("#main").querySelectorAll("[data-say]").forEach(b => b.onclick = () => sayWord(b.dataset.say));
   $("#main").querySelectorAll("[data-word]").forEach(b => b.onclick = () => playWord(+b.dataset.word));
   $("#main").querySelectorAll("[data-goto]").forEach(b => b.onclick = e => { e.stopPropagation(); openRec(+b.dataset.goto, +b.dataset.t); });
+  bindReason($("#main"));
+}
+
+// ---------- vocab: names and jargon for Whisper ----------
+$("#openVocab").onclick = showVocab;
+async function showVocab() {
+  closePop(); stopLiveView(); stopDeviceView();
+  state.rec = null;
+  document.querySelectorAll(".rec").forEach(el => el.classList.remove("active"));
+  const items = await api("/api/vocab");
+  const src = t("vocabSources");
+  $("#main").innerHTML = `<div class="top"><div class="title-row"><h2>${t("vocab")}</h2>
+      <span class="muted" style="color:var(--muted)">${t("entries", { n: items.length })}</span></div></div>
+    <div class="vocab">
+      <p class="hint">${t("vocabHint")}</p>
+      <div class="row"><input type="text" id="vocabNew" placeholder="${t("vocabAddPh")}" style="flex:1">
+        <button class="primary" id="vocabAdd">${t("add")}</button></div>
+      <div class="terms">${items.length ? items.map(v => `<span class="term">${esc(v.term)}
+        <small>${esc(src[v.source] || v.source)}</small><button class="link" data-rm="${esc(v.term)}" title="${t("delete")}">×</button></span>`).join("")
+        : `<span class="muted">${t("vocabEmpty")}</span>`}</div>
+      <h3>${t("vocabPasteTitle")}</h3>
+      <textarea id="vocabText" placeholder="${t("vocabPastePh")}"></textarea>
+      <div class="row"><button id="vocabFind">${t("vocabFind")}</button><span id="vocabFound" class="muted"></span></div>
+    </div>`;
+  const add = async (terms, source) => {
+    const r = await api("/api/vocab", { method: "POST", body: { terms, source } });
+    toast(t("vocabAdded", { n: r.added.length })); showVocab();
+  };
+  $("#vocabAdd").onclick = () => { const v = $("#vocabNew").value.trim(); if (v) add([v]); };
+  $("#vocabNew").onkeydown = e => { if (e.key === "Enter") $("#vocabAdd").click(); };
+  $("#main").querySelectorAll("[data-rm]").forEach(b => b.onclick = async () => {
+    await api(`/api/vocab/${encodeURIComponent(b.dataset.rm)}`, { method: "DELETE" });
+    toast(t("vocabRemoved", { w: esc(b.dataset.rm) })); showVocab();
+  });
+  $("#vocabFind").onclick = async () => {
+    const r = await api("/api/vocab/import", { method: "POST", body: { text: $("#vocabText").value } });
+    const box = $("#vocabFound");
+    if (!r.found.length) { box.textContent = t("vocabNoneFound"); return; }
+    box.innerHTML = `${r.found.map(esc).join(", ")} <button class="primary" id="vocabAddAll">${t("vocabAddAll", { n: r.found.length })}</button>`;
+    $("#vocabAddAll").onclick = () => add(r.found, "import");
+  };
 }
 
 // ---------- live recording ----------

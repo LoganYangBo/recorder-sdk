@@ -35,13 +35,18 @@ device / folder ──► sync ──► faster-whisper ──► speaker labels
 ## Features
 
 - **Transcription** with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), with
-  per-word timestamps and confidence, initial prompts and hotwords, on GPU or CPU.
+  per-word timestamps and confidence, initial prompts and hotwords, on GPU or CPU. Defaults to
+  `large-v3-turbo` with batched decoding, several times faster than `large-v3` on long files.
+- **Vocab**: names and jargon from your life (people, products, work terms) that Whisper is told
+  about on every transcription. Enrolled people's names and words you correct as misheard are
+  added on their own; `recorder vocab import` picks them out of your documents.
 - **Speaker labels** from voiceprints (SpeechBrain ECAPA): each segment is `me`, an enrolled
   person, or `other`.
 - **Device sync** over USB or Bluetooth, plus live transcription over Bluetooth. Files are
-  deduplicated by content hash, compressed to Ogg Opus (about 8x smaller than WAV) and processed
-  one at a time. A file that fails is logged and retried
-  without blocking the rest.
+  deduplicated by content hash and compressed to Ogg Opus (about 8x smaller than WAV). Reading,
+  transcribing and compressing overlap, files already synced are not read again, and over
+  Bluetooth each file is transcribed while the next downloads. A file that fails is logged and
+  retried without blocking the rest.
 - **Wall-clock time** for every recording, taken from file names or metadata, so you can ask
   "what did I say on Tuesday afternoon".
 - **Full-text search** in any language (SQLite FTS5, trigram tokenizer).
@@ -49,7 +54,10 @@ device / folder ──► sync ──► faster-whisper ──► speaker labels
   diff. Forced alignment cuts the original audio, which you can compare with a dictionary
   recording or a synthesised female or male voice.
 - **Local web UI** to browse, play, search, import, record live, enroll speakers and review words.
-- **Stable `Recorder` API** for apps, phrased in days, people and words rather than tables.
+- **Stable `Recorder` API** for apps, phrased in days, people and words rather than tables:
+  conversations across the recorder's 10-minute files, and a change cursor so apps only read
+  what is new.
+- **Export** a transcript as Markdown, SubRip subtitles or plain text.
 - **Versioned schema**: existing databases migrate in place on open.
 
 ## Installation
@@ -57,7 +65,7 @@ device / folder ──► sync ──► faster-whisper ──► speaker labels
 Requires Python 3.10+. The core depends only on NumPy; features are opt-in extras.
 
 ```bash
-pip install "recorder[whisper,speaker,learn] @ git+https://github.com/LoganYangBo/recorder-sdk@v0.3.0"
+pip install "recorder[whisper,speaker,learn] @ git+https://github.com/LoganYangBo/recorder-sdk@v0.4.0"
 ```
 
 For development, from a clone:
@@ -165,15 +173,30 @@ does so whenever the device is plugged in (all need the `device` extra).
 
 For each file:
 
-1. Hash the file. If it is already in the database, it's done.
-2. Copy it into the library as `recordings/YYYY/MM/DD/<name>.opus`. WAV is re-encoded to mono
-   16 kHz Ogg Opus at 32 kbps (`--keep-wav` skips that). The copy goes through a `.part` file,
-   so an interrupted copy never looks complete.
-3. Transcribe, label speakers, align and analyse unsure words, as `transcribe` does.
-4. Record the outcome in the `files` table. A failing file (corrupt, unreadable) is retried on
+1. If the same file (path, size and modification time) was synced before, it's done without
+   reading it.
+2. Otherwise copy it to this computer, hashing it in the same pass. If the content is already in
+   the database, it's done. Copies go through a `.part` file, so an interrupted copy never looks
+   complete.
+3. Transcribe and label speakers from the local copy, as `transcribe` does, and log how long each
+   stage took.
+4. Keep it in the library as `recordings/YYYY/MM/DD/<name>.opus`: WAV is re-encoded to mono
+   16 kHz Ogg Opus at 32 kbps (`--keep-wav` skips that).
+5. Record the outcome in the `files` table. A failing file (corrupt, unreadable) is retried on
    the next sync, up to 3 times (`--retry` resets the limit).
-5. With `--delete`, remove the file from the device, only once its copy is in both the library
+6. With `--delete`, remove the file from the device, only once its copy is in both the library
    and the database.
+
+The stages overlap: while Whisper works on one file, the next is read from the device and the
+previous one is compressed. Aligning and analysing unsure words wait until every file is in, so
+transcripts arrive as early as possible. Over Bluetooth, each file is transcribed while the next
+one downloads; `recorder sync --ble --watch` keeps collecting finished 10-minute files while the
+recorder is still recording, so there is little left to download when you sit down.
+
+**Speed.** On a GPU, `large-v3-turbo` with `--batch-size 8` (the defaults) is several times
+faster than `large-v3` one window at a time, at nearly the same accuracy for English. For the most
+accurate transcripts, pass `--model large-v3`; if the GPU runs out of memory, lower
+`--batch-size` (0 turns batching off).
 
 ## Speaker identification
 
@@ -199,7 +222,7 @@ more of their speech works best.
 
 ```bash
 recorder ui                                   # http://127.0.0.1:8765
-recorder ui --model large-v3 --hotwords "PyTorch Kubernetes"
+recorder ui --model large-v3 --hotwords "PyTorch Kubernetes"   # most accurate, slower
 ```
 
 The server listens on localhost only. The interface is in English or Chinese, following the
@@ -220,6 +243,12 @@ one job at a time in a background queue, which the page lists under Background j
   Whisper re-decoding that spot at higher temperatures, plus dictionary words one or two sounds
   away. Pick one, type another, or confirm the original. Candidates and word times are worked out
   once per recording in the background, so the popup opens instantly.
+- **Whose mistake.** When you correct one of your own words, say whether Whisper misheard it or
+  you mispronounced it. Misheard names go into the vocab; mispronounced words are what the
+  English coach practises. Corrections of other people's words count as misheard.
+- **Vocab.** Add, remove and review the names and terms given to Whisper, or paste a document
+  and add the names and terms found in it.
+- **Export** a transcript as Markdown, subtitles (.srt) or text from its title row.
 - **Notebook.** Every corrected or confirmed word, with its IPA against what Whisper heard and
   the sounds that differ (e.g. /θ/ said as /s/). Play your original audio, cut to the aligned
   word, next to a reference: a human recording from Wiktionary (via dictionaryapi.dev), or an
@@ -244,6 +273,10 @@ with Recorder("recorder.db") as rec:
     for w in rec.unsure_words(speaker="me"):  # words to practise
         print(w.word, w.candidates, w.sentence, w.at)
     rec.corrections()  # the notebook
+    for c in rec.conversations(day="2026-10-16"):  # talk across 10-minute files
+        print(c.start, c.end, c.speakers, c.text[:80])
+    changes = rec.changes(since=0)  # since=0: everything; keep changes.cursor for next time
+    print(changes.changed, changes.deleted, changes.cursor)
 ```
 
 | Method | Returns |
@@ -254,7 +287,10 @@ with Recorder("recorder.db") as rec:
 | `my_utterances(**filters)` | `utterances(speaker="me", ...)` |
 | `search(query, speaker, since, until, day, limit)` | Matching segments as `Utterance` |
 | `unsure_words(speaker, since, until, day, recording, below, include_reviewed)` | `UnsureWord` with candidates |
-| `corrections(include_confirmed)` | `Correction` entries, newest first |
+| `corrections(include_confirmed)` | `Correction` entries, newest first; `reason` is `misheard`, `mispronounced` or `None` |
+| `conversations(day, since, until, gap, min_seconds)` | `Conversation(start, end, utterances)`: talk with no silence over `gap` seconds (default 300), across files |
+| `changes(since)` | `Changes(changed, deleted, cursor)`: recording ids added or changed (re-transcribed, corrected, relabelled, renamed) or deleted after `since` |
+| `vocab()` | The vocab terms, newest first |
 
 Time arguments accept `"2026-10-16"`, `"2026-10-16T09:00:00"`, `date` or `datetime`. Ranges are
 half-open, `[since, until)`. `Utterance.at` is the wall-clock time, or `None` when the
@@ -263,10 +299,10 @@ recording's start time is unknown; undated results sort last.
 Ingesting from code:
 
 ```python
-from recorder import Pipeline, Store, Syncer, WhisperTranscriber, find_devices
+from recorder import Pipeline, Store, Syncer, WhisperTranscriber, find_devices, vocab
 
 with Store("recorder.db") as store:
-    pipe = Pipeline(WhisperTranscriber(model="large-v3"), store)
+    pipe = Pipeline(WhisperTranscriber(vocab=vocab.from_store("recorder.db")), store)
     for device in find_devices():
         for result in Syncer(store, pipe, "recordings").sync(device):
             print(result.path, result.status, result.error)
@@ -284,8 +320,10 @@ with Store("recorder.db") as store:
 
 | Command | Purpose |
 |---------|---------|
-| `transcribe PATH...` | Transcribe files or folders. `--model`, `--device`, `--compute-type`, `--language`, `--prompt`, `--hotwords`, `--reprocess`, `--no-suggest` |
-| `sync [SOURCE]` | Sync the device or a folder. `--ble`, `--watch`, `--interval`, `--library`, `--delete`, `--keep-wav`, `--retry` |
+| `transcribe PATH...` | Transcribe files or folders. `--model`, `--batch-size`, `--device`, `--compute-type`, `--language`, `--prompt`, `--hotwords`, `--reprocess`, `--no-suggest` |
+| `sync [SOURCE]` | Sync the device or a folder. `--ble`, `--watch`, `--interval`, `--library`, `--delete`, `--keep-wav`, `--retry`, `--model`, `--batch-size` |
+| `vocab [list\|add\|remove\|import]` | Names and jargon for Whisper. `add Mia su7 --kind name`, `import notes.md --dry-run` |
+| `export ID` | A transcript as `--format md\|srt\|txt`, to `--output FILE` or the screen |
 | `live` | Live transcription from the recorder over Bluetooth. `--save` keeps it as a recording |
 | `device` | The recorder's state, battery and files, over Bluetooth |
 | `settime` | Set the recorder's clock over USB |
@@ -311,9 +349,11 @@ when a `Store` opens it.
 | `recordings` | Path, content hash, duration, `started_at`, display name, transcriber settings (`params`) |
 | `segments` | Text, speaker, timings, `avg_logprob`, `no_speech_prob`; indexed by `segments_fts` |
 | `words` | Per-word timings and probability, the original word if corrected, candidates, alignment state |
-| `corrections` | Every word the user corrected or confirmed |
+| `corrections` | Every word the user corrected or confirmed, and whose mistake it was (`reason`) |
+| `vocab` | Names and jargon given to Whisper as hotwords, and where each came from |
+| `deleted` | Deleted recording ids, for `Recorder.changes()` (recordings carry a `version` counter) |
 | `voiceprints` | Enrolled speakers' voiceprints |
-| `files` | Per-source-file sync status, error and attempts |
+| `files` | Per-source-file sync status, error and attempts, and size/mtime to skip unchanged files |
 
 `Recording.params` records the model, prompt and hotwords each transcript was made with, so you
 can tell which recordings are worth re-running after a change.
@@ -327,10 +367,12 @@ can tell which recordings are worth re-running after a change.
 | `clock.py` | Setting the recorder's clock over USB serial |
 | `ble.py` | The recorder over Bluetooth: clock, file download, live audio |
 | `adpcm.py` | Decoding the recorder's IMA ADPCM audio |
-| `ingest.py` | `Syncer`: copy, compress, process and track each file |
+| `ingest.py` | `Syncer`: read, process, compress and track each file, the stages overlapping |
 | `pipeline.py` | Transcribe, label, store one file |
 | `transcribe.py` | faster-whisper wrapper; alternative decodes for unsure words |
-| `speaker.py` | Voiceprints and labelling |
+| `speaker.py` | Voiceprints and labelling (embeddings batched on the GPU) |
+| `vocab.py` | Hotwords from the vocab; names and terms picked out of documents |
+| `export.py` | Markdown, SubRip and text exports |
 | `align.py` | Forced alignment (MMS_FA) for word times |
 | `learn.py` | IPA, sound-alikes, phoneme diffs (CMU dict) |
 | `tts.py` | Kokoro reference voices |

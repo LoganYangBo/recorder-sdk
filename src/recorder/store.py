@@ -115,6 +115,30 @@ MIGRATIONS = [
         updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
     """,
+    """
+    -- names and jargon the user's recordings use, given to Whisper as hotwords
+    CREATE TABLE vocab (
+        term      TEXT PRIMARY KEY COLLATE NOCASE,
+        kind      TEXT,           -- name / term, or NULL
+        source    TEXT NOT NULL,  -- manual / voiceprint / correction / import
+        added_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    -- why a word was corrected: misheard (Whisper's mistake) / mispronounced (the speaker's);
+    -- NULL for a confirmation, or when the user didn't say
+    ALTER TABLE corrections ADD COLUMN reason TEXT;
+    -- size and modification time of the file on the source, so an unchanged file
+    -- isn't read again just to hash it
+    ALTER TABLE files ADD COLUMN size INTEGER;
+    ALTER TABLE files ADD COLUMN mtime REAL;
+    -- a counter bumped whenever a recording (or its transcript) changes, for Recorder.changes()
+    ALTER TABLE recordings ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+    UPDATE recordings SET version = id;
+    CREATE INDEX idx_recordings_version ON recordings(version);
+    CREATE TABLE deleted (
+        recording_id  INTEGER PRIMARY KEY,
+        version       INTEGER NOT NULL
+    );
+    """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -189,6 +213,39 @@ class Store:
     def __exit__(self, *exc):
         self.close()
 
+    def _bump(self, recording_id: int) -> None:
+        """Mark a recording as changed (inside the caller's transaction)."""
+        self.conn.execute(
+            "UPDATE recordings SET version = (SELECT MAX(v) FROM ("
+            "SELECT COALESCE(MAX(version), 0) AS v FROM recordings UNION ALL "
+            "SELECT COALESCE(MAX(version), 0) FROM deleted)) + 1 WHERE id = ?",
+            (recording_id,),
+        )
+
+    def version(self) -> int:
+        """The latest change counter: pass it to changes() later to get what changed since."""
+        row = self.conn.execute(
+            "SELECT MAX(v) FROM (SELECT COALESCE(MAX(version), 0) AS v FROM recordings "
+            "UNION ALL SELECT COALESCE(MAX(version), 0) FROM deleted)"
+        ).fetchone()
+        return row[0]
+
+    def changes(self, since: int = 0) -> tuple[list[int], list[int], int]:
+        """(recordings added or changed, recordings deleted, new cursor) after counter `since`."""
+        changed = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT id FROM recordings WHERE version > ? ORDER BY version", (since,)
+            )
+        ]
+        deleted = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT recording_id FROM deleted WHERE version > ? ORDER BY version", (since,)
+            )
+        ]
+        return changed, deleted, self.version()
+
     def find_by_hash(self, sha256: str) -> Recording | None:
         row = self.conn.execute(
             f"SELECT {_REC_COLS} FROM recordings r WHERE r.sha256 = ?", (sha256,)
@@ -250,7 +307,16 @@ class Store:
                     "VALUES (?, ?, ?, ?, ?)",
                     [(cur.lastrowid, w.start, w.end, w.word, w.probability) for w in s.words],
                 )
+            self.conn.execute("DELETE FROM deleted WHERE recording_id = ?", (rid,))
+            self._bump(rid)
         return rid
+
+    def set_path(self, recording_id: int, path: str | Path) -> None:
+        """Point a recording at its audio file's new place (e.g. once compressed)."""
+        with self.conn:
+            self.conn.execute(
+                "UPDATE recordings SET path = ? WHERE id = ?", (str(path), recording_id)
+            )
 
     def recording(self, recording_id: int) -> Recording | None:
         row = self.conn.execute(
@@ -261,7 +327,13 @@ class Store:
     def delete(self, recording_id: int) -> bool:
         """Remove a recording and its segments and words. The audio file is left alone."""
         with self.conn:
+            version = self.version() + 1
             cur = self.conn.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
+            if cur.rowcount:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO deleted (recording_id, version) VALUES (?, ?)",
+                    (recording_id, version),
+                )
         return cur.rowcount > 0
 
     def set_started_at(self, recording_id: int, started_at: str | None) -> None:
@@ -269,6 +341,7 @@ class Store:
             self.conn.execute(
                 "UPDATE recordings SET started_at = ? WHERE id = ?", (started_at, recording_id)
             )
+            self._bump(recording_id)
 
     def rename(self, recording_id: int, title: str | None) -> bool:
         """Set a recording's display name; empty or None goes back to the file name."""
@@ -277,6 +350,7 @@ class Store:
                 "UPDATE recordings SET title = ? WHERE id = ?",
                 ((title or "").strip() or None, recording_id),
             )
+            self._bump(recording_id)
         return cur.rowcount > 0
 
     def recordings(self) -> list[Recording]:
@@ -388,10 +462,15 @@ class Store:
         row = self.conn.execute("SELECT candidates FROM words WHERE id = ?", (word_id,)).fetchone()
         return json.loads(row[0]) if row and row[0] is not None else None
 
-    def correct_word(self, word_id: int, chosen: str) -> dict:
+    def correct_word(self, word_id: int, chosen: str, reason: str | None = None) -> dict:
         """Replace a word with what the user says was meant (or confirm it, if
         `chosen` is the same word), rebuild its segment's text, and log it in
-        `corrections`. Returns the correction as a dict."""
+        `corrections`. Returns the correction as a dict.
+
+        `reason` says whose mistake it was: "misheard" (Whisper's: the word goes
+        into the vocab when it is a name or unusual) or "mispronounced" (the
+        speaker's). Left out, a change to someone else's words counts as misheard,
+        and a change to the wearer's own is left open."""
         from .learn import normalize, recase
 
         ctx = self.word_context(word_id)
@@ -400,6 +479,12 @@ class Store:
         w = ctx["word"]
         heard = w.original if w.original is not None else w.word
         new = recase(chosen.strip(), w.word) if normalize(chosen) != normalize(w.word) else w.word
+        if reason not in (None, "misheard", "mispronounced"):
+            raise ValueError(f"unknown reason {reason!r}")
+        if normalize(chosen) == normalize(heard):
+            reason = None  # confirmed: nobody's mistake
+        elif reason is None and ctx["speaker"] != "me":
+            reason = "misheard"
         with self.conn:
             self.conn.execute(
                 "UPDATE words SET word = ?, original = ? WHERE id = ?", (new, heard, word_id)
@@ -419,8 +504,8 @@ class Store:
             self.conn.execute("DELETE FROM corrections WHERE word_id = ?", (word_id,))
             cur = self.conn.execute(
                 "INSERT INTO corrections "
-                "(recording_id, word_id, heard, chosen, start, end, speaker, sentence) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(recording_id, word_id, heard, chosen, start, end, speaker, sentence, reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     ctx["recording_id"],
                     word_id,
@@ -430,8 +515,15 @@ class Store:
                     w.end,
                     ctx["speaker"],
                     sentence,
+                    reason,
                 ),
             )
+            self._bump(ctx["recording_id"])
+            if reason == "misheard":
+                from .vocab import worth_keeping
+
+                if worth_keeping(chosen.strip()):
+                    self.add_vocab(chosen.strip(), source="correction")
         return self.corrections(cur.lastrowid)[0]
 
     def corrections(self, correction_id: int | None = None) -> list[dict]:
@@ -439,8 +531,9 @@ class Store:
         where, args = ("WHERE c.id = ?", (correction_id,)) if correction_id else ("", ())
         rows = self.conn.execute(
             "SELECT c.id, c.recording_id, c.word_id, c.heard, c.chosen, c.start, c.end, "
-            "       c.speaker, c.sentence, c.created_at, r.title, r.path "
-            f"FROM corrections c LEFT JOIN recordings r ON r.id = c.recording_id {where} "
+            "       c.speaker, c.sentence, c.created_at, c.reason, r.title, r.path, w.word "
+            "FROM corrections c LEFT JOIN recordings r ON r.id = c.recording_id "
+            f"LEFT JOIN words w ON w.id = c.word_id {where} "
             "ORDER BY c.id DESC",
             args,
         ).fetchall()
@@ -455,11 +548,13 @@ class Store:
             "speaker",
             "sentence",
             "created_at",
+            "reason",
         )
         out = []
         for r in rows:
-            d = dict(zip(keys, r[:10]))
-            d["recording"] = r[10] or (Path(r[11]).name if r[11] else None)
+            d = dict(zip(keys, r[:11]))
+            d["recording"] = r[11] or (Path(r[12]).name if r[12] else None)
+            d["shown"] = r[13]  # the word as it now reads in the transcript ("Mia,")
             out.append(d)
         return out
 
@@ -482,6 +577,7 @@ class Store:
                 "WHERE id = ?",
                 [(s.speaker, s.speaker_score, s.speaker_match, i) for s, i in zip(segments, ids)],
             )
+            self._bump(recording_id)
 
     def save_voiceprint(self, name: str, model: str, embedding: bytes) -> None:
         with self.conn:
@@ -489,6 +585,8 @@ class Store:
                 "INSERT OR REPLACE INTO voiceprints (name, model, embedding) VALUES (?, ?, ?)",
                 (name, model, embedding),
             )
+        if name != "me":  # a person's name: make sure Whisper spells it right
+            self.add_vocab(name, kind="name", source="voiceprint")
 
     def voiceprints(self) -> dict[str, tuple[str, bytes]]:
         """All enrolled voices: name -> (model, float32 embedding bytes)."""
@@ -564,7 +662,7 @@ class Store:
     def set_file_status(self, sha256: str, source: str, status: str, **fields) -> None:
         """Insert or update a file's sync record. `fields`: path, started_at,
         error, recording_id; a failure also counts an attempt."""
-        allowed = {"path", "started_at", "error", "recording_id"}
+        allowed = {"path", "started_at", "error", "recording_id", "size", "mtime"}
         assert set(fields) <= allowed, fields
         with self.conn:
             self.conn.execute(
@@ -581,6 +679,41 @@ class Store:
                 )
             elif status == "done":
                 self.conn.execute("UPDATE files SET error = NULL WHERE sha256 = ?", (sha256,))
+
+    def file_by_source(self, source: str, size: int, mtime: float) -> dict | None:
+        """The sync record of a file seen before at `source` with this size and mtime."""
+        row = self.conn.execute(
+            "SELECT sha256 FROM files WHERE source = ? AND size = ? AND mtime = ? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (source, size, mtime),
+        ).fetchone()
+        return self.file_status(row[0]) if row else None
+
+    # ---- vocab: names and jargon ----
+
+    def add_vocab(self, term: str, kind: str | None = None, source: str = "manual") -> bool:
+        """Add a word or phrase to the vocab; False if it was already there."""
+        term = " ".join(term.split())
+        if not term:
+            return False
+        with self.conn:
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO vocab (term, kind, source) VALUES (?, ?, ?)",
+                (term, kind, source),
+            )
+        return cur.rowcount > 0
+
+    def remove_vocab(self, term: str) -> bool:
+        with self.conn:
+            cur = self.conn.execute("DELETE FROM vocab WHERE term = ?", (term.strip(),))
+        return cur.rowcount > 0
+
+    def vocab(self) -> list[dict]:
+        """The vocab, newest first: [{term, kind, source, added_at}]."""
+        rows = self.conn.execute(
+            "SELECT term, kind, source, added_at FROM vocab ORDER BY added_at DESC, rowid DESC"
+        ).fetchall()
+        return [dict(zip(("term", "kind", "source", "added_at"), r)) for r in rows]
 
     def files(self, status: str | None = None) -> list[dict]:
         rows = self.conn.execute(

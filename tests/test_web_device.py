@@ -106,3 +106,20 @@ def test_live_transcription(setup):
     assert stop["recording"] is None  # the card has the same audio
     assert jcall(base, "/api/recordings") == []
     assert "S0" in fake.sent and not jcall(base, "/api/device")["live"]
+
+
+def test_sync_imports_while_the_next_file_downloads(setup):
+    pytest.importorskip("av")
+    base, fake, tmp = setup
+    first = next(iter(fake.files.values()))
+    fake.files["REC/20261020/094000.WAV"] = first[:-256] + bytes(256)  # different content
+    fake.files["REC/20261020/095000.WAV"] = first[:-512] + bytes(512)
+    jcall(base, "/api/device/connect", "POST", {})
+    jcall(base, "/api/device/sync", "POST", {})
+    job = wait_job(base, "device")
+    assert job["status"] == "done", job
+    assert job["new"] == 3 and job["progress"] == [3, 3]
+    assert job["bytes"][0] == job["bytes"][1]
+    starts = sorted(r["started_at"] for r in jcall(base, "/api/recordings"))
+    assert starts == ["2026-10-20T09:30:00", "2026-10-20T09:40:00", "2026-10-20T09:50:00"]
+    assert len(fake.files) == 3  # not deleted unless asked

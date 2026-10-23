@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "recorder"
-version = "0.3.0"
+version = "0.4.0"
 description = "Transcription pipeline SDK for an all-day wearable recorder"
 readme = "README.md"
 requires-python = ">=3.10"

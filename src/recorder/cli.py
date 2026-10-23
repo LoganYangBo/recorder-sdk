@@ -7,6 +7,7 @@ from . import ops
 from .pipeline import Pipeline
 from .store import Store
 from .sync import AudioFile, FolderSource, find_devices
+from .transcribe import DEFAULT_BATCH, DEFAULT_MODEL
 from .turns import merge_turns
 
 
@@ -92,6 +93,7 @@ class _Files:
 
 def _transcriber(args):
     from .transcribe import WhisperTranscriber
+    from .vocab import from_store
 
     return WhisperTranscriber(
         model=args.model,
@@ -100,6 +102,8 @@ def _transcriber(args):
         language=args.language,
         initial_prompt=args.prompt,
         hotwords=args.hotwords,
+        batch_size=getattr(args, "batch_size", 0),
+        vocab=from_store(args.db),
     )
 
 
@@ -110,6 +114,7 @@ def cmd_transcribe(args) -> None:
     with Store(args.db) as store:
         labeler = None if args.no_speakers else _voiceprint_labeler(store, args)
         pipe = Pipeline(transcriber, store, labeler, reprocess=args.reprocess)
+        new = []
         for target in args.paths:
             p = Path(target)
             source = FolderSource(p) if p.is_dir() else _Files([p])
@@ -122,8 +127,14 @@ def cmd_transcribe(args) -> None:
                     "skip (already in db)" if r.skipped else f"ok -> recording {r.recording_id}"
                 )
                 print(f"{r.path}: {status}")
-                if not args.no_suggest:
-                    _suggest(store, transcriber, r.recording_id, aligner())
+                if r.timings:
+                    print(f"  {r.timing()}")
+                if not r.skipped:
+                    new.append(r.recording_id)
+        # transcripts first, extras after: the text of every file is in before this starts
+        if not args.no_suggest:
+            for rid in new:
+                _suggest(store, transcriber, rid, aligner())
     if failed:
         raise SystemExit(f"{failed} file(s) failed")
 
@@ -220,23 +231,56 @@ def cmd_device(args) -> None:
     print(f"{len(files)} recording(s) on the card, {size / 1e6:.1f} MB")
 
 
-def _sync_ble(args, run, store) -> bool:
-    """One Bluetooth sync: download new recordings to inbox/ by the db, import them, and
-    with --delete remove them from the card. False if no recorder is in range."""
+def _sync_ble(args, make_syncer, store) -> bool:
+    """One Bluetooth sync: download new recordings to inbox/ by the db, transcribing each as
+    soon as it is in (while the next one downloads), and with --delete remove them from the
+    card. False if no recorder is in range."""
+    import queue
+    import threading
+
     from .ble import download_new
+    from .sync import started_at_of
 
     inbox = Path(args.db).resolve().parent / "inbox"
+    arrived: queue.Queue = queue.Queue()
+    found: dict = {}
 
-    async def fetch(rec):
-        print(_battery(await rec.status()))
-        return await download_new(rec, inbox, print)
+    def download():
+        async def fetch(rec):
+            print(_battery(await rec.status()))
+            return await download_new(rec, inbox, print, lambda card, local: arrived.put(local))
 
-    files = _ble(args, fetch)
+        try:
+            found["files"] = _ble(args, fetch)
+        finally:
+            arrived.put(None)
+
+    worker = threading.Thread(target=download, daemon=True)
+    worker.start()
+    syncer, results, new = None, {}, []
+    while (local := arrived.get()) is not None:
+        syncer = syncer or make_syncer(store)
+        r = syncer.sync_file(AudioFile(local, started_at_of(local)), args.retry, after=False)
+        results[local] = r
+        if r.status != "known":
+            print(f"{local.name}: {r.status}" + (f" ({r.error})" if r.error else ""))
+        if r.status == "new":
+            new.append(r.recording_id)
+    worker.join()
+    files = found.get("files")
     if files is None:
         return False
-    results = run(_Files([local for _, local in files]), store) if files else []
-    done = {r.path for r in results if r.status in ("new", "known", "noise")}
-    gone = [(card, local) for card, local in files if local in done]
+    counts: dict[str, int] = {}
+    for r in results.values():
+        counts[r.status] = counts.get(r.status, 0) + 1
+    print("bluetooth: " + (", ".join(f"{n} {k}" for k, n in counts.items()) or "nothing new"))
+    for rid in new:
+        syncer.run_after(rid)
+    gone = [
+        (card, local)
+        for card, local in files
+        if local in results and results[local].status in ("new", "known", "noise")
+    ]
     if args.delete and gone:
 
         async def delete(rec):
@@ -318,11 +362,11 @@ def cmd_sync(args) -> None:
     transcriber = None
     aligner = _LazyAligner(args.device)
 
-    def run(source, store):
+    def make_syncer(store):
         nonlocal transcriber
         transcriber = transcriber or _transcriber(args)
         labeler = None if args.no_speakers else _voiceprint_labeler(store, args)
-        syncer = Syncer(
+        return Syncer(
             store,
             Pipeline(transcriber, store, labeler),
             library,
@@ -334,7 +378,9 @@ def cmd_sync(args) -> None:
             else lambda rid: _suggest(store, transcriber, rid, aligner()),
             log=print,
         )
-        results = syncer.sync(source, retry=args.retry)
+
+    def run(source, store):
+        results = make_syncer(store).sync(source, retry=args.retry)
         counts = {}
         for r in results:
             counts[r.status] = counts.get(r.status, 0) + 1
@@ -344,13 +390,13 @@ def cmd_sync(args) -> None:
     if args.ble:
         with Store(args.db) as store:
             if not args.watch:
-                if not _sync_ble(args, run, store):
+                if not _sync_ble(args, make_syncer, store):
                     raise SystemExit("no recorder in range: switch it on and bring it close")
                 return
             print("looking for the recorder over Bluetooth (Ctrl+C to stop)...")
             try:
                 while True:
-                    synced = _sync_ble(args, run, store)
+                    synced = _sync_ble(args, make_syncer, store)
                     time.sleep(BLE_EVERY if synced else args.interval)
             except KeyboardInterrupt:
                 pass
@@ -445,7 +491,12 @@ def cmd_suggest(args) -> None:
 def cmd_ui(args) -> None:
     from .web import serve
 
-    whisper = {"model": args.model, "language": args.language, "hotwords": args.hotwords}
+    whisper = {
+        "model": args.model,
+        "language": args.language,
+        "hotwords": args.hotwords,
+        "batch_size": args.batch_size,
+    }
     serve(
         args.db,
         host=args.host,
@@ -510,6 +561,57 @@ def cmd_search(args) -> None:
             print(f"#{rec.id} {when}{_fmt(seg.start)}  {who}{seg.text}")
 
 
+def cmd_vocab(args) -> None:
+    from .vocab import candidates, hotwords
+
+    with Store(args.db) as store:
+        if args.action == "add":
+            for term in args.terms:
+                added = store.add_vocab(term, kind=args.kind)
+                print(f"{'added' if added else 'already there'}: {term}")
+        elif args.action == "remove":
+            for term in args.terms:
+                print(f"{'removed' if store.remove_vocab(term) else 'not found'}: {term}")
+        elif args.action == "import":
+            known = {v["term"].lower() for v in store.vocab()}
+            for path in args.terms:
+                text = Path(path).read_text(encoding="utf-8", errors="replace")
+                found = candidates(text, known)
+                if args.dry_run:
+                    print("\n".join(found) or f"{path}: nothing new")
+                    continue
+                for term in found:
+                    store.add_vocab(term, source="import")
+                    known.add(term.lower())
+                listed = f": {', '.join(found)}" if found else ""
+                print(f"{path}: {len(found)} term(s) added{listed}")
+        else:
+            items = store.vocab()
+            for v in items:
+                kind = f" ({v['kind']})" if v["kind"] else ""
+                print(f"{v['term']}{kind}  [{v['source']}, {v['added_at'][:10]}]")
+            sent = hotwords([v["term"] for v in items]) or ""
+            n = len(sent.split(" ")) if sent else 0
+            print(f"{len(items)} term(s); the newest that fit go to Whisper ({len(sent)} chars)")
+            if items and n < len(items):
+                print("  (the oldest don't fit in Whisper's prompt; remove ones not needed)")
+
+
+def cmd_export(args) -> None:
+    from .export import export
+
+    with Store(args.db) as store:
+        rec = store.recording(args.recording_id)
+        if rec is None:
+            raise SystemExit(f"no recording {args.recording_id}")
+        text = export(rec, store.segments(rec.id), args.format)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"wrote {args.output}")
+    else:
+        print(text, end="")
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="recorder")
     ap.add_argument("--db", default="recorder.db", help="SQLite database path")
@@ -517,7 +619,10 @@ def main(argv: list[str] | None = None) -> None:
 
     t = sub.add_parser("transcribe", help="transcribe audio files or folders")
     t.add_argument("paths", nargs="+")
-    t.add_argument("--model", default="large-v3")
+    t.add_argument("--model", default=DEFAULT_MODEL, help="e.g. large-v3 (slower)")
+    t.add_argument(
+        "--batch-size", type=int, default=DEFAULT_BATCH, help="0 = no batching (less GPU memory)"
+    )
     t.add_argument("--device", default="auto", help="auto / cuda / cpu")
     t.add_argument("--compute-type", default="default", help="e.g. float16, int8_float16, int8")
     t.add_argument("--language", default=None, help="force language, e.g. en / zh")
@@ -558,7 +663,7 @@ def main(argv: list[str] | None = None) -> None:
 
     sg = sub.add_parser("suggest", help="suggest corrections for unsure words (done on transcribe)")
     sg.add_argument("recording_ids", nargs="*", type=int, help="default: all not analysed yet")
-    sg.add_argument("--model", default="large-v3")
+    sg.add_argument("--model", default=DEFAULT_MODEL)
     sg.add_argument("--device", default="auto", help="auto / cuda / cpu")
     sg.add_argument("--language", default=None, help="force language, e.g. en / zh")
     sg.set_defaults(func=cmd_suggest)
@@ -584,7 +689,8 @@ def main(argv: list[str] | None = None) -> None:
     u.add_argument("--port", type=int, default=8765)
     u.add_argument("--host", default="127.0.0.1", help="keep the default to stay local-only")
     u.add_argument("--device", default="auto", help="auto / cuda / cpu")
-    u.add_argument("--model", default="large-v3", help="Whisper model for imports and live")
+    u.add_argument("--model", default=DEFAULT_MODEL, help="Whisper model for imports and live")
+    u.add_argument("--batch-size", type=int, default=DEFAULT_BATCH, help="0 = no batching")
     u.add_argument("--language", default=None, help="force language, e.g. en / zh")
     u.add_argument("--hotwords", default=None, help='names/terms to favour, e.g. "PyTorch"')
     u.add_argument(
@@ -609,7 +715,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     sy.add_argument("--keep-wav", action="store_true", help="don't compress WAV to Opus")
     sy.add_argument("--retry", action="store_true", help="also retry files that failed 3 times")
-    sy.add_argument("--model", default="large-v3")
+    sy.add_argument("--model", default=DEFAULT_MODEL)
+    sy.add_argument("--batch-size", type=int, default=DEFAULT_BATCH, help="0 = no batching")
     sy.add_argument("--device", default="auto", help="auto / cuda / cpu")
     sy.add_argument("--compute-type", default="default")
     sy.add_argument("--language", default=None)
@@ -622,7 +729,7 @@ def main(argv: list[str] | None = None) -> None:
 
     lv = sub.add_parser("live", help="transcribe the recorder live over Bluetooth")
     lv.add_argument("--save", action="store_true", help="store the session as a recording")
-    lv.add_argument("--model", default="large-v3")
+    lv.add_argument("--model", default=DEFAULT_MODEL)
     lv.add_argument("--device", default="auto", help="auto / cuda / cpu")
     lv.add_argument("--compute-type", default="default")
     lv.add_argument("--language", default=None)
@@ -651,6 +758,21 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--day", help="only recordings started on this day, e.g. 2026-10-16")
     q.add_argument("--limit", type=int, default=50)
     q.set_defaults(func=cmd_search)
+
+    vc = sub.add_parser("vocab", help="names and jargon Whisper should get right")
+    vc.add_argument(
+        "action", nargs="?", default="list", choices=["list", "add", "remove", "import"]
+    )
+    vc.add_argument("terms", nargs="*", help="words/phrases (add, remove) or text files (import)")
+    vc.add_argument("--kind", choices=["name", "term"], help="what the added terms are")
+    vc.add_argument("--dry-run", action="store_true", help="import: only show what would be added")
+    vc.set_defaults(func=cmd_vocab)
+
+    ex = sub.add_parser("export", help="write a transcript as Markdown, subtitles or text")
+    ex.add_argument("recording_id", type=int)
+    ex.add_argument("--format", "-f", default="md", choices=["md", "srt", "txt"])
+    ex.add_argument("--output", "-o", help="file to write (default: print)")
+    ex.set_defaults(func=cmd_export)
 
     args = ap.parse_args(argv)
     args.func(args)

@@ -1,5 +1,6 @@
 import json
 import wave
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -216,3 +217,86 @@ def test_cli_dates_backfills(tmp_path, capsys):
     cli.main(["--db", str(tmp_path / "t.db"), "dates"])
     with Store(tmp_path / "t.db") as store:
         assert [r.started_at for r in store.recordings()] == ["2026-10-16T09:15:00", None]
+
+
+def test_unchanged_files_are_not_read_again(tmp_path, monkeypatch):
+    from recorder import ingest
+
+    src = tmp_path / "src"
+    src.mkdir()
+    write_wav(src / "20261016T091500.wav")
+    write_wav(src / "20261016T101500.wav", freq=300)
+    reads = []
+    real = ingest.copy_and_hash
+    monkeypatch.setattr(ingest, "copy_and_hash", lambda s, d: reads.append(s) or real(s, d))
+    with Store(tmp_path / "t.db") as store:
+        syncer = Syncer(store, Pipeline(FakeTranscriber(), store), tmp_path / "lib", compress=False)
+        assert [r.status for r in syncer.sync(FolderSource(src))] == ["new", "new"]
+        assert len(reads) == 2  # copied and hashed in one read each
+        assert [r.status for r in syncer.sync(FolderSource(src))] == ["known", "known"]
+        assert len(reads) == 2  # same size and time: not read again
+        write_wav(src / "20261016T101500.wav", freq=500, seconds=2)  # changed on the device
+        assert [r.status for r in syncer.sync(FolderSource(src))] == ["known", "new"]
+        assert len(reads) == 3
+
+
+def test_extras_run_after_every_file_is_in(tmp_path):
+    pytest.importorskip("av")
+    src = tmp_path / "src"
+    src.mkdir()
+    for i in range(3):
+        write_wav(src / f"20261016T09{i}000.wav", freq=200 + 100 * i)
+    events = []
+
+    class Recording(FakeTranscriber):
+        def transcribe(self, path):
+            events.append(("transcribe", path.parent.name))
+            return super().transcribe(path)
+
+    with Store(tmp_path / "t.db") as store:
+        syncer = Syncer(
+            store,
+            Pipeline(Recording(), store),
+            tmp_path / "lib",
+            after=lambda rid: events.append(("after", store.recording(rid).path)),
+        )
+        assert [r.status for r in syncer.sync(FolderSource(src))] == ["new"] * 3
+        kinds = [e[0] for e in events]
+        assert kinds == ["transcribe"] * 3 + ["after"] * 3
+        assert {e[1] for e in events[:3]} == {".staging"}  # transcribed from the local WAV
+        # by the time extras run, every recording points at its compressed copy
+        assert all(e[1].endswith(".opus") for e in events[3:])
+        assert all(r.path.endswith(".opus") and Path(r.path).is_file() for r in store.recordings())
+        assert not (tmp_path / "lib" / ".staging").exists()
+        assert [f["path"].endswith(".opus") for f in store.files()] == [True] * 3
+
+
+def test_delete_source_after_compression(tmp_path):
+    pytest.importorskip("av")
+    src = tmp_path / "src"
+    src.mkdir()
+    write_wav(src / "20261016T091500.wav")
+    with Store(tmp_path / "t.db") as store:
+        syncer = Syncer(
+            store, Pipeline(FakeTranscriber(), store), tmp_path / "lib", delete_source=True
+        )
+        assert [r.status for r in syncer.sync(FolderSource(src))] == ["new"]
+    assert list(src.iterdir()) == []
+    assert [p.suffix for p in (tmp_path / "lib").rglob("*.*")] == [".opus"]
+
+
+def test_sync_file_alone_compresses_too(tmp_path):
+    pytest.importorskip("av")
+    from recorder.sync import AudioFile
+
+    write_wav(tmp_path / "20261016T091500.wav")
+    with Store(tmp_path / "t.db") as store:
+        done = []
+        syncer = Syncer(
+            store, Pipeline(FakeTranscriber(), store), tmp_path / "lib", after=done.append
+        )
+        f = AudioFile(tmp_path / "20261016T091500.wav", "2026-10-16T09:15:00")
+        r = syncer.sync_file(f)
+        assert r.status == "new" and done == [r.recording_id]
+        assert store.recording(r.recording_id).path.endswith("20261016T091500.opus")
+        assert syncer.sync_file(f, after=False).status == "known"
